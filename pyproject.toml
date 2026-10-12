@@ -1,7 +1,7 @@
 [project]
 name = "autonomous-job-agent"
-version = "0.2.0"
-description = "Local job discovery agent with factual resume tailoring, version history, and audit reports"
+version = "0.3.0"
+description = "Local LangGraph job discovery workflow with factual resume tailoring, application tracking, and JSON exports"
 readme = "README.md"
 authors = [
     { name = "Abhik Das", email = "abhikdss98123@gmail.com" }
@@ -11,6 +11,8 @@ dependencies = [
     "apscheduler>=3.10,<4.0",
     "fastapi>=0.115,<1.0",
     "httpx>=0.27,<1.0",
+    "langchain>=0.3,<2.0",
+    "langgraph>=0.2,<2.0",
     "pydantic-settings>=2.4,<3.0",
     "pypdf>=5.0,<7.0",
     "pytest>=8.0,<9.0",

@@ -38,9 +38,10 @@ Resume files are stored locally in `data/resumes`, which is excluded from Git. D
    - `GET /resumes/versions/{version_id}` — version metadata/report fields
    - `GET /resumes/versions/{version_id}/download?file_type=pdf`
    - change `file_type` to `docx` for an editable resume or `report` for the JSON audit report
-6. Approve the exact version using `POST /resumes/versions/{version_id}/approve`.
-7. Approve the job using `POST /approvals/{job_id}/decision` with `{"decision":"approved","notes":"Reviewed job and resume version"}`.
-8. After personally submitting the application on the employer website, record it through `POST /resumes/versions/{version_id}/record-submission` with JSON such as `{"notes":"Submitted on employer website"}`.
+6. Approve the exact resume version using `POST /resumes/versions/{version_id}/approve`.
+7. Approve the **job itself** using `POST /approvals/{job_id}/decision` with `{"decision":"approved","notes":"Reviewed job and resume version"}`. These are two separate approvals; approving only the resume is not enough.
+8. Submit the application manually on the employer website with that exact approved resume.
+9. Record the completed submission through `POST /resumes/versions/{version_id}/record-submission` with JSON such as `{"notes":"Submitted on employer website"}`. If the job is not approved, the API intentionally returns HTTP 409 Conflict. The dashboard displays the specific reason and disables the record button until the job status is approved.
 
 Each tailoring run creates a new version; it does not overwrite prior versions. The model is instructed to select and reorder **verbatim passages** from the master resume only. Code checks every resume passage against the source and rejects the run if the model introduces new wording. The audit report lists unsupported job requirements separately so the resume does not claim them.
 

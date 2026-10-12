@@ -23,8 +23,21 @@ def post(path, params=None, body=None):
         response = requests.post(api + path, params=params, json=body, timeout=120)
         response.raise_for_status()
         return response.json()
-    except Exception as exc:
-        st.error(f"Request failed: {exc}")
+    except requests.HTTPError as exc:
+        response = exc.response
+        detail = None
+        if response is not None:
+            try:
+                payload = response.json()
+                detail = payload.get("detail") if isinstance(payload, dict) else None
+            except ValueError:
+                detail = None
+        message = detail or (response.text[:500] if response is not None else str(exc))
+        status_code = response.status_code if response is not None else "unknown"
+        st.error(f"Request failed ({status_code}): {message}")
+        return None
+    except requests.RequestException as exc:
+        st.error(f"Could not reach the API: {exc}")
         return None
 
 
@@ -135,7 +148,7 @@ with resumes_tab:
         )
         selected_job = jobs_by_id[selected_job_id]
         st.markdown(f"[Open job posting]({selected_job['url']})")
-        st.caption(f"Location: {selected_job.get('location', 'Not specified')} · Source: {selected_job.get('source', 'unknown')}")
+        st.caption(f"Location: {selected_job.get('location', 'Not specified')} · Source: {selected_job.get('source', 'unknown')} · Agent status: {selected_job.get('status', 'unknown')}")
         with st.expander("Job description"):
             st.write(selected_job.get("description") or "No description available.")
         if st.button("Generate a new resume version", type="primary", key="tailor_resume"):
@@ -184,9 +197,22 @@ with resumes_tab:
                             st.success("Resume version approved. The job itself must also be approved in the Approval queue.")
                             st.rerun()
                 elif version["status"] == "approved":
-                    st.info("Approved version. After submitting this file manually on the employer's website, record that submission below.")
+                    job_is_approved = selected_job.get("status") == "approved_to_apply"
+                    if job_is_approved:
+                        st.info("Resume version and job are approved. After submitting this exact file manually on the employer's website, record that submission below.")
+                    else:
+                        st.warning(
+                            "This resume version is approved, but the job is not approved yet. "
+                            "Go to Ranked jobs and click 'Queue for approval' if needed, then open Approval queue "
+                            "and click 'Approve job'. Return here afterward. Submission recording stays blocked until then."
+                        )
                     notes = st.text_input("Submission note (optional)", key="submission_note_" + version_id)
-                    if st.button("Record manual submission", key="record_submission_" + version_id):
+                    if st.button(
+                        "Record manual submission",
+                        key="record_submission_" + version_id,
+                        disabled=not job_is_approved,
+                        help=None if job_is_approved else "Approve this job in the Approval queue first.",
+                    ):
                         result = post(f"/resumes/versions/{version_id}/record-submission", body={"notes": notes})
                         if result:
                             st.success("Submission recorded against this exact resume version.")

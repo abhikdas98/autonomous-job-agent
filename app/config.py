@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     email_to: str = ""
     smtp_starttls: bool = True
     llm_rank_top_n: int = 3
+    workflow_llm_rank_top_n: int = 1
     default_job_location: str = "India"
     default_job_query: str = "agentic AI engineer OR generative AI engineer OR GenAI developer"
     daily_report_hour: int = 18
@@ -32,8 +33,14 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = False
     ranking_worker_enabled: bool = False
     ranking_worker_interval_seconds: int = 65
+    auto_tailor_enabled: bool = True
+    auto_tailor_top_n: int = 2
+    auto_tailor_min_score: int = 65
+    json_exports_enabled: bool = True
+
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore")
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
 
 settings = Settings()

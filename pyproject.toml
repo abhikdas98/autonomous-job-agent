@@ -1,7 +1,7 @@
 [project]
 name = "autonomous-job-agent"
 version = "0.2.0"
-description = "Local job discovery agent with factual resume tailoring and version history"
+description = "Local job discovery agent with factual resume tailoring, version history, and audit reports"
 readme = "README.md"
 authors = [
     { name = "Abhik Das", email = "abhikdss98123@gmail.com" }

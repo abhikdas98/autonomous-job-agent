@@ -1,7 +1,18 @@
 
 import threading
 
+import pytest
+
+from app.config import settings
+from app.db import init_db
 from app.services.llm_worker import RankingWorker
+
+
+@pytest.fixture(autouse=True)
+def isolated_worker_database(tmp_path, monkeypatch):
+    # Worker lifecycle events use SQLite; provide a clean schema on fresh CI runs.
+    monkeypatch.setattr(settings, "database_path", str(tmp_path / "worker-tests.db"))
+    init_db()
 
 
 def test_worker_processes_a_batch_and_stops():

@@ -16,74 +16,75 @@ Local one-click job-search workflow built with FastAPI, Streamlit, LangChain/Lan
 
 The LangGraph workflow runs these steps in order:
 
-- Search the configured job source and save records.
+- Search the configured source and store job records.
 - Deduplicate listings and compute deterministic baseline scores.
-- Use the configured LLM to rank the shortlist; deterministic scores remain available when the LLM is rate-limited or unavailable.
-- Automatically create source-verified resume drafts for up to `AUTO_TAILOR_TOP_N` new, high-scoring real listings (default: 3; score threshold default: 65).
-- Queue those jobs and exact resume versions for review.
+- Use the configured LLM to rank a shortlist; deterministic scores remain available when the LLM is rate-limited or unavailable.
+- Create fact-checked resume drafts for up to `AUTO_TAILOR_TOP_N` new, high-scoring real listings (default: 2; minimum baseline score: 65).
+- Queue those jobs and exact resume versions for your review.
 - Optionally email a digest when the button's email checkbox is enabled and SMTP is configured.
-- Update JSON snapshots and store run status, warnings, errors, job records, resume metadata, application status, and events locally.
+- Update local JSON snapshots and save run status, warnings, errors, jobs, resume metadata, applications, and events.
 
-Repeated discovery does not create another resume version for a job that already has a version. Prior resume versions remain unchanged. The API's `/agent/runs` and dashboard's Monitoring tab show prior workflow runs and failures.
+The default LLM call budget is intentionally conservative: one LLM ranking call plus up to two resume drafts per run, within the existing local limiter of three new requests/minute. Tune `WORKFLOW_LLM_RANK_TOP_N`, `AUTO_TAILOR_TOP_N`, and `LLM_MAX_REQUESTS_PER_MINUTE` only to match your provider's actual quota. Provider-side rate limits still apply. If you already have a version for a job, the agent preserves it and doesn't create a duplicate automatically.
 
 ## Application submission boundary
 
-The agent automates **preparation and tracking**, but it does not automatically submit employer forms. Employer sites have different application forms, sign-in requirements, consent prompts, and anti-bot protections. A draft is not evidence that an application has been submitted.
+The agent automates discovery, filtering, ranking, resume preparation, approval queuing, and tracking. It does **not** submit employer forms automatically. Arbitrary employer sites require different forms, authentication, consent, and application-specific answers; the current project has no verified official application API integration for all sites.
 
-Review the job description and exact generated PDF/DOCX, approve the job and resume version separately, then submit on the employer's official site. Only after submission should you click **Record manual submission**. That records the application status and approved resume version locally; it does not submit anything externally.
+Review the job description and exact generated PDF/DOCX, approve the job and resume version separately, then submit on the employer's official site. Only after submission click **Record manual submission**. This records the application and exact resume version locally; it doesn't submit externally or bypass CAPTCHA/access controls.
 
 The generator selects and reorders only verbatim passages from your master resume. Its audit report lists job requirements not evidenced in the source resume. This cannot prove claims already in the source resume are true, so always review each draft.
 
 ## Local storage and JSON records
 
-SQLite is the transactional source of truth at `data/agent.db`. After each complete workflow run and relevant API change, the agent refreshes portable JSON snapshots under `data/exports/`:
+SQLite is the transactional source of truth at `data/agent.db`. After each workflow run and relevant API mutation, portable JSON snapshots are written under `data/exports/`:
 
-- `jobs.json` — listing details, score, rationale, status, and dates
+- `jobs.json` — listing details, score, rationale, status, dates
 - `applications.json` — application tracking status and notes
 - `approvals.json` — job approval decisions
-- `resume_versions.json` — resume versions, source/JD hashes, selected resume text, status, and artifact paths
-- `events.json` — recent operations, warnings, and errors
+- `resume_versions.json` — each resume version, selected source passages, provenance hashes, statuses, and artifact paths
+- `events.json` — operations, warnings, and errors
 - `ranking_queue.json` — LLM ranking queue and retry states
 - `agent_runs.json` and `latest_run.json` — run-by-run workflow outcomes
-- `manifest.json` — export time and per-file record counts
+- `manifest.json` — export time and record counts
 
-Actual master resume files, generated PDFs/DOCX, and per-version tailoring audit JSON files stay under `data/resumes/`. Both `data/` and `.env` are Git-ignored; do not commit personal resume files, generated application data, or credentials. Back up the local `data/` directory securely if you need to preserve history.
+Actual master resume files, generated PDFs/DOCX, and per-version tailoring audit JSON files stay under `data/resumes/`. Both `data/` and `.env` are Git-ignored; never commit your personal resume, application history, or credentials. Back up `data/` securely if you need to preserve history.
 
-You can inspect exports from the dashboard's Monitoring & JSON tab or use `GET /exports/status` and `POST /exports/refresh`.
+Inspect exports from the dashboard's Monitoring & JSON tab or use `GET /exports/status` and `POST /exports/refresh`.
 
 ## Configuration
 
-Install packages after pulling an update:
+Install dependencies after pulling an update:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Create `.env` if you have not already:
+Create `.env` only if you don't already have one:
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Set these values in `.env` (never paste them into chat or commit them):
+Set these values in your private local `.env` file (never paste them into chat or commit them):
 
-- `ADZUNA_APP_ID`, `ADZUNA_APP_KEY`: Adzuna API credentials
+- `ADZUNA_APP_ID`, `ADZUNA_APP_KEY`: Adzuna credentials
 - `GROQ_API_KEY`: LLM API key
 - `GROQ_API_BASE`, `GROQ_MODEL`: configured OpenAI-compatible endpoint and model
-- `AUTO_TAILOR_ENABLED=true`, `AUTO_TAILOR_TOP_N=3`, `AUTO_TAILOR_MIN_SCORE=65`: automatic drafting limits
-- `JSON_EXPORTS_ENABLED=true`: local JSON snapshot export
+- `AUTO_TAILOR_ENABLED=true`, `AUTO_TAILOR_TOP_N=2`, `AUTO_TAILOR_MIN_SCORE=65`: automatic draft limits
+- `WORKFLOW_LLM_RANK_TOP_N=1`: LLM ranking calls per workflow run
+- `JSON_EXPORTS_ENABLED=true`: local JSON snapshots
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM`, `EMAIL_TO`: optional email digest configuration
 
-SMTP is optional for the discovery and resume workflow. If email is not configured, run without selecting the email checkbox; the workflow will report why an email was not sent.
+SMTP is optional. If email is not configured, leave the email checkbox off; the workflow reports why an email wasn't sent. Your resume content is sent to the configured LLM provider for passage selection, so use only a provider you trust and are permitted to share your resume with.
 
-Background scheduling stays disabled by default (`SCHEDULER_ENABLED=false`) to match the requested manual morning routine. With it disabled, starting the API does not trigger discovery; you manually click **Run complete workflow** once each morning. If you later enable the scheduler, discovery intervals and daily email time are configured by `DISCOVERY_INTERVAL_HOURS` and `DAILY_REPORT_HOUR`.
+Background scheduling stays disabled by default (`SCHEDULER_ENABLED=false`) to match the manual-morning routine. Starting the API doesn't start discovery; click **Run complete workflow** once each morning. If you later enable scheduling, `DISCOVERY_INTERVAL_HOURS` controls discovery cadence and `DAILY_REPORT_HOUR` controls the report time (Asia/Kolkata).
 
 ## API and troubleshooting
 
-- `GET /health` — health and active configuration
-- `POST /agent/run` — run the complete workflow
-- `GET /agent/runs` — previous run history
-- `GET /jobs`, `GET /approvals?status=pending` — tracked jobs and pending review
-- `GET /resumes/{job_id}` — resume versions for a job
+- `GET /health` — service and active configuration
+- `POST /agent/run` — full workflow
+- `GET /agent/runs` — previous workflow runs
+- `GET /jobs`, `GET /approvals?status=pending` — jobs and approval queue
+- `GET /resumes/{job_id}` — resume version history
 - `GET /metrics`, `GET /events` — monitoring
 - `GET /exports/status`, `POST /exports/refresh` — JSON export status and refresh
 

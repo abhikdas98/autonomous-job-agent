@@ -44,6 +44,8 @@ Resume files are stored locally in `data/resumes`, which is excluded from Git. D
 
 Each tailoring run creates a new version; it does not overwrite prior versions. The model is instructed to select and reorder **verbatim passages** from the master resume only. Code checks every resume passage against the source and rejects the run if the model introduces new wording. The audit report lists unsupported job requirements separately so the resume does not claim them.
 
+Privacy note: the source resume text and selected job description are sent to the LLM endpoint configured in your local `.env` (currently your Groq-compatible endpoint) for passage selection. Resume files and generated versions remain in your local `data/resumes` folder and are excluded from Git, but the LLM provider processes the text sent to it. Do not use this feature for documents that you are not permitted to share with that provider.
+
 This safeguard prevents the generator from adding new wording, but it cannot prove that claims already present in the original resume are true, nor fully verify whether the selected passages are contextually appropriate. Always inspect the generated PDF/DOCX before approving it.
 
 The project does **not** automatically submit employer applications or bypass CAPTCHAs/access controls. Submission tracking records a manual submission you have completed after both the job and exact resume version have been approved.

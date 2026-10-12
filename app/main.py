@@ -20,6 +20,8 @@ from app.resumes import (
 )
 
 logging.basicConfig(level=settings.log_level)
+# httpx logs full request URLs at INFO, which can expose credentials in Adzuna query strings.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
 ranking_worker = RankingWorker()
 

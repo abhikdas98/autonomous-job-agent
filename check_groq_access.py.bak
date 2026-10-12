@@ -1,0 +1,36 @@
+
+import httpx
+from app.config import settings
+
+url = settings.omniroute_api_base.rstrip("/") + "/chat/completions"
+
+payload = {
+    "model": settings.omniroute_model,
+    "messages": [
+        {
+            "role": "user",
+            "content": 'Return valid JSON with one field: {"status":"OK"}',
+        }
+    ],
+    "max_completion_tokens": 400,
+    "reasoning_effort": "low",
+    "include_reasoning": False,
+    "response_format": {"type": "json_object"},
+}
+
+try:
+    response = httpx.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {settings.omniroute_api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=30,
+    )
+
+    print("HTTP status:", response.status_code)
+    print("Response:", response.text[:2000])
+
+except httpx.HTTPError as exc:
+    print("Request failed:", type(exc).__name__, str(exc)[:500])

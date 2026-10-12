@@ -1,0 +1,359 @@
+import json
+import sqlite3
+
+import pytest
+
+from app.config import settings
+from app.db import init_db
+from app.services import llm_ranking
+from app.llm.client import LLMDeferred
+
+
+@pytest.fixture
+def test_db(tmp_path, monkeypatch):
+    """Use an isolated SQLite database for each test."""
+    db_path = tmp_path / "test_agent.db"
+    monkeypatch.setattr(settings, "database_path", str(db_path))
+
+    init_db()
+
+    with sqlite3.connect(db_path) as conn:
+        jobs = [
+            (
+                "job-good",
+                "Generative AI Engineer",
+                "Example Company",
+                "India",
+                "https://example.com/1",
+                "Requires Python, RAG and LangChain.",
+                "test",
+                "fp-good",
+                70.0,
+                "[]",
+            ),
+            (
+                "job-demo",
+                "Generative AI Engineer (DEMO)",
+                "Example Labs",
+                "India",
+                "https://example.com/2",
+                "Demo role.",
+                "test",
+                "fp-demo",
+                95.0,
+                "[]",
+            ),
+            (
+                "job-sample",
+                "AI Engineer",
+                "Sample Company",
+                "India",
+                "https://example.com/3",
+                "Sample role.",
+                "test",
+                "fp-sample",
+                90.0,
+                "[]",
+            ),
+            (
+                "job-test",
+                "Test AI Engineer",
+                "Example Company",
+                "India",
+                "https://example.com/4",
+                "Test role.",
+                "test",
+                "fp-test",
+                85.0,
+                "[]",
+            ),
+        ]
+
+        conn.executemany(
+            """
+            INSERT INTO jobs (
+                id, title, company, location, url, description,
+                source, fingerprint, score, score_reasons
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            jobs,
+        )
+
+    return db_path
+
+
+def valid_response():
+    return json.dumps({
+        "fit_score": 90,
+        "rationale": "The description explicitly requires Python, RAG and LangChain.",
+        "matching_skills": ["Python", "RAG", "LangChain"],
+    })
+
+
+class FakeClient:
+    def __init__(self, response=None, error=None):
+        self.response = response
+        self.error = error
+        self.calls = 0
+
+    def chat(self, *args, **kwargs):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return self.response
+
+
+def read_db(db_path, query, params=()):
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(query, params).fetchall()
+
+
+def test_queue_excludes_demo_sample_and_test_jobs(
+    test_db, monkeypatch
+):
+    monkeypatch.setattr(settings, "llm_rank_top_n", 3)
+
+    fake = FakeClient(response=valid_response())
+    monkeypatch.setattr(
+        llm_ranking,
+        "OmniRouteClient",
+        lambda: fake,
+    )
+
+    result = llm_ranking.rank_shortlist(limit=3)
+
+    assert result["llm_updated"] == 1
+    assert fake.calls == 1
+
+    completed = read_db(
+        test_db,
+        """
+        SELECT j.id
+        FROM llm_ranking_queue q
+        JOIN jobs j ON j.id = q.job_id
+        WHERE q.status = 'completed'
+        """,
+    )
+
+    assert [row["id"] for row in completed] == ["job-good"]
+
+
+def test_successful_ranking_saves_score_and_marks_completed(
+    test_db, monkeypatch
+):
+    fake = FakeClient(response=valid_response())
+    monkeypatch.setattr(
+        llm_ranking,
+        "OmniRouteClient",
+        lambda: fake,
+    )
+
+    result = llm_ranking.rank_shortlist(limit=1)
+
+    assert result["llm_updated"] == 1
+    assert result["deferred"] == 0
+
+    rows = read_db(
+        test_db,
+        """
+        SELECT j.score, j.score_reasons, q.status, q.attempts
+        FROM jobs j
+        JOIN llm_ranking_queue q ON q.job_id = j.id
+        WHERE j.id = 'job-good'
+        """,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["score"] == pytest.approx(81.0)
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["attempts"] == 1
+
+    reasons = json.loads(rows[0]["score_reasons"])
+    assert reasons[0].startswith("LLM:")
+    assert "Skill: Python" in reasons
+
+
+def test_malformed_response_is_deferred_not_completed(
+    test_db, monkeypatch
+):
+    fake = FakeClient(
+        response=json.dumps({
+            "fit_score": 120,
+            "rationale": "A relevant role.",
+            "matching_skills": ["Python"],
+        })
+    )
+    monkeypatch.setattr(
+        llm_ranking,
+        "OmniRouteClient",
+        lambda: fake,
+    )
+
+    result = llm_ranking.rank_shortlist(limit=1)
+
+    assert result["llm_updated"] == 0
+    assert result["deferred"] == 1
+
+    rows = read_db(
+        test_db,
+        """
+        SELECT status, attempts, last_error
+        FROM llm_ranking_queue
+        WHERE job_id = 'job-good'
+        """,
+    )
+
+    assert rows[0]["status"] == "pending"
+    assert rows[0]["attempts"] == 1
+    assert "fit_score" in rows[0]["last_error"]
+
+
+def test_rate_limit_defers_remaining_batch_without_more_calls(
+    test_db, monkeypatch
+):
+    # Only the first job is relevant; insert two additional real jobs.
+    with sqlite3.connect(test_db) as conn:
+        for index in range(2):
+            conn.execute(
+                """
+                INSERT INTO jobs (
+                    id, title, company, location, url, description,
+                    source, fingerprint, score, score_reasons
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"job-extra-{index}",
+                    f"Generative AI Engineer {index}",
+                    f"Company {index}",
+                    "India",
+                    f"https://example.com/extra-{index}",
+                    "Requires Python and RAG.",
+                    "test",
+                    f"fp-extra-{index}",
+                    60.0 - index,
+                    "[]",
+                ),
+            )
+
+    fake = FakeClient(error=LLMDeferred("Local RPM budget exhausted."))
+    monkeypatch.setattr(
+        llm_ranking,
+        "OmniRouteClient",
+        lambda: fake,
+    )
+
+    result = llm_ranking.rank_shortlist(limit=3)
+
+    assert fake.calls == 1
+    assert result["llm_updated"] == 0
+    assert result["deferred"] == 3
+
+    rows = read_db(
+        test_db,
+        """
+        SELECT status, attempts, available_at, last_error
+        FROM llm_ranking_queue
+        WHERE job_id IN ('job-good', 'job-extra-0', 'job-extra-1')
+        """,
+    )
+
+    assert len(rows) == 3
+    assert all(row["status"] == "pending" for row in rows)
+    assert all(row["available_at"] > 0 for row in rows)
+    assert all("RPM" in row["last_error"] for row in rows)
+
+
+def test_completed_job_is_not_ranked_twice(
+    test_db, monkeypatch
+):
+    monkeypatch.setattr(
+        settings,
+        "llm_rank_top_n",
+        3,
+    )
+
+    fake = FakeClient(response=valid_response())
+
+    monkeypatch.setattr(
+        "app.services.llm_ranking.OmniRouteClient",
+        lambda: fake,
+    )
+
+    # First run should rank the eligible job.
+    first_result = llm_ranking.rank_shortlist(limit=1)
+
+    assert first_result["llm_updated"] == 1
+    assert fake.calls == 1
+
+    # Second run should skip the completed job.
+    second_result = llm_ranking.rank_shortlist(limit=1)
+
+    assert second_result["llm_updated"] == 0
+    assert fake.calls == 1
+
+
+def test_exhausted_rpm_budget_defers_queue_without_extra_calls(
+    test_db, monkeypatch
+):
+    monkeypatch.setattr(settings, "llm_rank_top_n", 3)
+
+    fake = FakeClient(
+        error=LLMDeferred("Local RPM budget exhausted.")
+    )
+
+    monkeypatch.setattr(
+        "app.services.llm_ranking.OmniRouteClient",
+        lambda: fake,
+    )
+
+    result = llm_ranking.rank_shortlist(limit=3)
+
+    assert fake.calls == 1
+    assert result["llm_updated"] == 0
+    assert result["deferred"] == result["considered"]
+
+    rows = read_db(
+        test_db,
+        "SELECT status, available_at, last_error "
+        "FROM llm_ranking_queue "
+        "WHERE status = 'pending'",
+    )
+
+    assert rows
+    assert all(row["available_at"] > 0 for row in rows)
+    assert all("RPM" in row["last_error"] for row in rows)
+
+
+def test_exhausted_rpd_budget_defers_queue_until_next_utc_day(
+    test_db, monkeypatch
+):
+    monkeypatch.setattr(settings, "llm_rank_top_n", 3)
+
+    fake = FakeClient(
+        error=LLMDeferred("Local RPD budget exhausted.")
+    )
+
+    monkeypatch.setattr(
+        "app.services.llm_ranking.OmniRouteClient",
+        lambda: fake,
+    )
+
+    result = llm_ranking.rank_shortlist(limit=3)
+
+    assert fake.calls == 1
+    assert result["llm_updated"] == 0
+    assert result["deferred"] == result["considered"]
+
+    rows = read_db(
+        test_db,
+        "SELECT status, available_at, last_error "
+        "FROM llm_ranking_queue "
+        "WHERE status = 'pending'",
+    )
+
+    assert rows
+    assert all(row["available_at"] > 0 for row in rows)
+    assert all("RPD" in row["last_error"] for row in rows)

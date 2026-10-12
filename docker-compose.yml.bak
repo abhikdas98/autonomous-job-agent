@@ -1,0 +1,12 @@
+services:
+  job-agent:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      OMNIROUTE_API_BASE: ${OMNIROUTE_API_BASE:-http://host.docker.internal:20128/v1}
+      DATABASE_PATH: /app/data/agent.db
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

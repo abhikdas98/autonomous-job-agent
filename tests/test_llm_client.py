@@ -1,0 +1,132 @@
+
+import httpx
+import pytest
+
+from app.config import settings
+from app.llm.client import GroqClient, LLMDeferred
+
+
+
+import httpx
+import pytest
+
+from app.config import settings
+from app.db import init_db
+from app.llm.client import GroqClient, LLMDeferred
+
+
+@pytest.fixture
+def client_settings(monkeypatch, tmp_path):
+    # Give each test an isolated SQLite database and request budget.
+    test_database = tmp_path / "llm_client_test.db"
+    monkeypatch.setattr(
+        settings,
+        "database_path",
+        str(test_database),
+    )
+    init_db()
+
+    monkeypatch.setattr(settings, "llm_enabled", True)
+    monkeypatch.setattr(settings, "llm_max_requests_per_minute", 10)
+    monkeypatch.setattr(settings, "llm_max_requests_per_day", 20)
+    monkeypatch.setattr(settings, "llm_max_retries", 2)
+    monkeypatch.setattr(settings, "llm_timeout_seconds", 1.0)
+    monkeypatch.setattr(settings, "llm_cache_ttl_seconds", 60)
+    monkeypatch.setattr(settings, "groq_api_key", "test-key")
+    monkeypatch.setattr(
+        settings,
+        "groq_api_base",
+        "https://example.invalid/v1",
+    )
+    monkeypatch.setattr(settings, "groq_model", "test-model")
+
+
+
+def test_permanent_http_error_is_not_retried(
+    client_settings, monkeypatch
+):
+    calls = []
+
+    def fake_post(self, url, **kwargs):
+        calls.append(url)
+        request = httpx.Request("POST", url)
+        return httpx.Response(
+            401,
+            request=request,
+            json={"error": "unauthorized"},
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+
+    with pytest.raises(LLMDeferred):
+        GroqClient().chat(
+            [{"role": "user", "content": "test"}]
+        )
+
+    assert len(calls) == 1
+
+
+def test_server_error_uses_bounded_retries(
+    client_settings, monkeypatch
+):
+    calls = []
+
+    def fake_post(self, url, **kwargs):
+        calls.append(url)
+        request = httpx.Request("POST", url)
+        return httpx.Response(
+            503,
+            request=request,
+            json={"error": "temporarily unavailable"},
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+    monkeypatch.setattr("app.llm.client.time.sleep", lambda _: None)
+
+    with pytest.raises(LLMDeferred):
+        GroqClient().chat(
+            [{"role": "user", "content": "test"}]
+        )
+
+    assert len(calls) == settings.llm_max_retries + 1
+
+
+def test_llm_disabled_does_not_make_http_request(
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "llm_enabled", False)
+
+    def unexpected_post(*args, **kwargs):
+        pytest.fail("HTTP request should not be made")
+
+    monkeypatch.setattr(httpx.Client, "post", unexpected_post)
+
+    with pytest.raises(LLMDeferred, match="disabled"):
+        GroqClient().chat(
+            [{"role": "user", "content": "test"}]
+        )
+
+
+
+def test_timeout_uses_bounded_retries(
+    client_settings, monkeypatch
+):
+    calls = []
+
+    def fake_post(self, url, **kwargs):
+        calls.append(url)
+        request = httpx.Request("POST", url)
+        raise httpx.ReadTimeout(
+            "Simulated timeout",
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+    monkeypatch.setattr("app.llm.client.time.sleep", lambda _: None)
+
+    with pytest.raises(LLMDeferred, match="bounded retries"):
+        GroqClient().chat(
+            [{"role": "user", "content": "test"}]
+        )
+
+    assert len(calls) == settings.llm_max_retries + 1

@@ -1,0 +1,192 @@
+import logging
+from contextlib import asynccontextmanager
+from apscheduler.schedulers.background import BackgroundScheduler
+from fastapi import FastAPI, HTTPException, Query
+from app.config import settings
+from app.db import init_db, log_event, metrics_snapshot, connection
+from app.models import ManualJobRequest, ApprovalDecision, ApplicationStatus
+from app.services.jobs import ingest_jobs, list_jobs, queue_approval, list_approvals, decide_approval, update_application
+from app.agent import run_discovery
+from app.notifications.email_report import send_report
+from app.services.llm_ranking import rank_shortlist, queue_snapshot
+from app.services.llm_worker import RankingWorker
+
+logging.basicConfig(level=settings.log_level)
+scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
+ranking_worker = RankingWorker()
+
+def scheduled_discovery():
+    try:
+        run_discovery(source="adzuna")
+    except Exception as exc:
+        log_event("scheduled_discovery_failed",{"error":str(exc)[:250]},"ERROR")
+
+def scheduled_email():
+    try:
+        result = send_report()
+        log_event("scheduled_email_report",result,"INFO" if result.get("sent") else "WARNING")
+    except Exception as exc:
+        log_event("scheduled_email_report_failed",{"error":str(exc)[:250]},"ERROR")
+
+
+@asynccontextmanager
+async def lifespan(app):
+    init_db()
+    log_event("app_started", {"app": settings.app_name})
+
+    if settings.scheduler_enabled:
+        scheduler.add_job(
+            scheduled_discovery,
+            "interval",
+            hours=max(1, settings.discovery_interval_hours),
+            id="job_discovery",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        scheduler.add_job(
+            scheduled_email,
+            "cron",
+            hour=max(0, min(23, settings.daily_report_hour)),
+            minute=0,
+            id="daily_email",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        scheduler.start()
+
+        log_event(
+            "scheduler_started",
+            {
+                "interval_hours": settings.discovery_interval_hours,
+                "daily_report_hour": settings.daily_report_hour,
+            },
+        )
+
+    if settings.ranking_worker_enabled:
+        ranking_worker.start()
+
+    try:
+        yield
+    
+    finally:
+        if settings.ranking_worker_enabled:
+            worker_stopped = ranking_worker.stop(timeout=90)
+
+            if not worker_stopped:
+                log_event(
+                    "ranking_worker_shutdown_incomplete",
+                    {
+                        "message": (
+                            "Worker did not stop within the shutdown timeout."
+                        )
+                    },
+                    "ERROR",
+                )
+
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+
+        log_event("app_stopped", {})
+
+
+app = FastAPI(title=settings.app_name,version="0.2.0",lifespan=lifespan)
+
+@app.get("/health")
+def health():
+    try:
+        with connection() as c: c.execute("SELECT 1")
+        return {"status":"ok","database":"ok","scheduler_enabled":settings.scheduler_enabled,
+                "llm_enabled":settings.llm_enabled,"groq_api_base":settings.groq_api_base,
+                "model":settings.groq_model,
+                "ranking_worker_enabled": settings.ranking_worker_enabled,
+                "ranking_worker_running": ranking_worker.running,}
+    except Exception as exc:
+        raise HTTPException(status_code=503,detail=f"Health check failed: {exc}")
+
+@app.post("/agent/run")
+def agent_run(source: str = Query("demo",pattern="^(demo|adzuna)$"),
+              what: str | None = None, where: str | None = None, send_email: bool = False):
+    try: return run_discovery(source,what,where,send_email)
+    except Exception as exc: raise HTTPException(status_code=502,detail=f"Agent run failed: {exc}")
+
+@app.post("/jobs/discover")
+def discover(source: str = Query("demo",pattern="^(demo|adzuna)$"),what: str = "generative ai engineer",
+             where: str = "India",limit: int = 20):
+    try:
+        from app.sources.demo import search_demo_jobs
+        from app.sources.adzuna import search_adzuna_jobs
+        found = search_demo_jobs(what,where) if source=="demo" else search_adzuna_jobs(what,where,limit)
+        return {"source":source,**ingest_jobs(found)}
+    except Exception as exc:
+        log_event("discovery_failed",{"source":source,"error":str(exc)[:250]},"ERROR")
+        raise HTTPException(status_code=502,detail=str(exc))
+
+@app.post("/jobs/ingest")
+def ingest(request: ManualJobRequest):
+    return ingest_jobs([j.model_dump() for j in request.jobs])
+
+@app.get("/jobs")
+def jobs(limit: int = 50,min_score: float = 0):
+    return list_jobs(limit,min_score)
+
+@app.post("/approvals/{job_id}")
+def create_approval(job_id: str):
+    if not queue_approval(job_id): raise HTTPException(status_code=404,detail="Job not found")
+    return {"job_id":job_id,"status":"pending","message":"Queued for review; nothing has been submitted."}
+
+@app.get("/approvals")
+def approvals(status: str = Query("pending",pattern="^(pending|approved|rejected)$")):
+    return list_approvals(status)
+
+@app.post("/approvals/{job_id}/decision")
+def approval_decision(job_id: str,body: ApprovalDecision):
+    if not decide_approval(job_id,body.decision,body.notes): raise HTTPException(status_code=404,detail="Job not found")
+    return {"job_id":job_id,"decision":body.decision}
+
+@app.post("/applications/{job_id}/status")
+def application_status(job_id: str,body: ApplicationStatus):
+    try: ok = update_application(job_id,body.status,body.notes)
+    except PermissionError as exc: raise HTTPException(status_code=409,detail=str(exc))
+    if not ok: raise HTTPException(status_code=404,detail="Job not found")
+    return {"job_id":job_id,"status":body.status}
+
+
+@app.get("/ranking/queue")
+def ranking_queue():
+    return queue_snapshot()
+
+
+@app.post("/ranking/process")
+def process_ranking_queue(
+    limit: int = Query(default=3, ge=1, le=30)
+):
+    try:
+        return rank_shortlist(limit=limit)
+    except Exception as exc:
+        log_event(
+            "ranking_queue_processing_failed",
+            {"error": str(exc)[:250]},
+            "ERROR",
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Ranking queue processing failed. Inspect /events.",
+        )
+
+@app.get("/metrics")
+def metrics(): return metrics_snapshot()
+
+@app.get("/events")
+def events(limit: int = 100):
+    with connection() as c:
+        rows = c.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?",(min(max(limit,1),500),)).fetchall()
+    return [dict(r) for r in rows]
+
+@app.post("/reports/email")
+def email_report():
+    try: return send_report()
+    except Exception as exc:
+        log_event("email_report_failed",{"error":str(exc)[:250]},"ERROR")
+        raise HTTPException(status_code=502,detail="Email report failed; inspect /events.")

@@ -1,0 +1,14 @@
+services:
+  job-agent:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      GROQ_API_BASE: ${GROQ_API_BASE:-https://api.groq.com/openai/v1}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+      DATABASE_PATH: /app/data/agent.db
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

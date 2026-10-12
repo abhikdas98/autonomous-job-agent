@@ -32,8 +32,16 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = False
     ranking_worker_enabled: bool = False
     ranking_worker_interval_seconds: int = 65
+
+    # One-click workflow limits: avoid spending LLM quota on every listing.
+    auto_tailor_enabled: bool = True
+    auto_tailor_top_n: int = 3
+    auto_tailor_min_score: int = 65
+    json_exports_enabled: bool = True
+
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore")
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
 
 settings = Settings()

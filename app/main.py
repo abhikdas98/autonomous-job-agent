@@ -149,6 +149,11 @@ def approval_decision(job_id: str, body: ApprovalDecision):
 
 @app.post("/applications/{job_id}/status")
 def application_status(job_id: str, body: ApplicationStatus):
+    if body.status == "submitted":
+        raise HTTPException(
+            status_code=409,
+            detail="Use /resumes/versions/{version_id}/record-submission so the exact approved resume version is recorded.",
+        )
     try:
         ok = update_application(job_id, body.status, body.notes)
     except PermissionError as exc:

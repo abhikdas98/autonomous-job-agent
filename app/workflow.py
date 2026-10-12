@@ -90,7 +90,7 @@ def _rank(state: AgentState) -> dict[str, Any]:
     if state.get("fatal_error"):
         return {"ranking": {"status": "skipped", "reason": "Discovery failed"}}
     try:
-        result = rank_shortlist(limit=settings.llm_rank_top_n)
+        result = rank_shortlist(limit=settings.workflow_llm_rank_top_n)
         log_event("agent_ranking_completed", {"run_id": state["run_id"], **result})
         return {"ranking": {"status": "completed", **result}}
     except Exception as exc:
@@ -159,6 +159,7 @@ def _tailor(state: AgentState) -> dict[str, Any]:
             queue_approval(job_id)  # Adds to review queue; never approves or submits.
             created.append({
                 "job_id": job_id,
+                "url": job.get("url", ""),
                 "title": job.get("title", ""),
                 "company": job.get("company", ""),
                 "score": job.get("score", 0),

@@ -50,6 +50,17 @@ def init_db():
           id INTEGER PRIMARY KEY AUTOINCREMENT, level TEXT NOT NULL, event TEXT NOT NULL,
           details TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS agent_runs (
+          run_id TEXT PRIMARY KEY,
+          source TEXT NOT NULL,
+          query TEXT NOT NULL,
+          location TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'running',
+          started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          completed_at TEXT,
+          summary_json TEXT NOT NULL DEFAULT '{}',
+          error TEXT NOT NULL DEFAULT ''
+        );
         CREATE TABLE IF NOT EXISTS llm_cache (
           cache_key TEXT PRIMARY KEY, response TEXT NOT NULL, expires_at REAL NOT NULL
         );
@@ -92,8 +103,8 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_llm_times ON llm_request_times(created_at);
         CREATE INDEX IF NOT EXISTS idx_resume_versions_job ON resume_versions(job_id, version_number DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs(started_at DESC);
         """)
-        # Idempotent migration: safe for existing databases with an earlier resume table.
         columns = {row["name"] for row in c.execute("PRAGMA table_info(resume_versions)").fetchall()}
         if "submission_notes" not in columns:
             c.execute("ALTER TABLE resume_versions ADD COLUMN submission_notes TEXT NOT NULL DEFAULT ''")
@@ -111,11 +122,13 @@ def metrics_snapshot():
         pending = c.execute("SELECT COUNT(*) FROM approvals WHERE status='pending'").fetchone()[0]
         submitted = c.execute("SELECT COUNT(*) FROM applications WHERE status='submitted'").fetchone()[0]
         versions = c.execute("SELECT COUNT(*) FROM resume_versions").fetchone()[0]
+        runs = c.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0]
         events = c.execute("SELECT event, COUNT(*) n FROM events GROUP BY event").fetchall()
     return {
         "jobs_total": jobs,
         "approvals_pending": pending,
         "applications_submitted": submitted,
         "resume_versions_total": versions,
+        "agent_runs_total": runs,
         "event_counts": {row["event"]: row["n"] for row in events},
     }

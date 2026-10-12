@@ -28,20 +28,6 @@ def post(path, params=None, body=None):
         return None
 
 
-def download_bytes(version_id, file_type):
-    try:
-        response = requests.get(
-            api + f"/resumes/versions/{version_id}/download",
-            params={"file_type": file_type},
-            timeout=30,
-        )
-        response.raise_for_status()
-        return response.content
-    except Exception as exc:
-        st.error(f"Download failed: {exc}")
-        return None
-
-
 with st.sidebar:
     st.subheader("Agent controls")
     source = st.selectbox("Source", ["demo", "adzuna"])
@@ -181,18 +167,15 @@ with resumes_tab:
                     st.caption("\n".join("• " + value for value in version["factuality_flags"]))
 
                 download_cols = st.columns(3)
-                for col, file_type, label, mime, suffix in [
-                    (download_cols[0], "pdf", "Download PDF", "application/pdf", ".pdf"),
-                    (download_cols[1], "docx", "Download DOCX", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"),
-                    (download_cols[2], "report", "Audit report", "application/json", ".json"),
-                ]:
-                    data = download_bytes(version_id, file_type)
-                    if data:
-                        col.download_button(
-                            label, data=data,
-                            file_name=f"{selected_job_id}_resume_v{version['version_number']:03d}{suffix}",
-                            mime=mime, key=f"download_{version_id}_{file_type}",
-                        )
+                download_cols[0].markdown(
+                    f"[Download PDF]({api}/resumes/versions/{version_id}/download?file_type=pdf)"
+                )
+                download_cols[1].markdown(
+                    f"[Download DOCX]({api}/resumes/versions/{version_id}/download?file_type=docx)"
+                )
+                download_cols[2].markdown(
+                    f"[Audit report]({api}/resumes/versions/{version_id}/download?file_type=report)"
+                )
 
                 if version["status"] == "needs_review":
                     if st.button("Approve this exact resume version", key="approve_resume_" + version_id):

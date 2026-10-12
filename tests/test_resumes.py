@@ -52,6 +52,8 @@ English, Hindi, Assamese, Bengali"""
     resumes.MASTER_DIR.mkdir(parents=True, exist_ok=True)
     resumes.MASTER_SOURCE.write_text(source, encoding="utf-8")
     monkeypatch.setattr(settings, "llm_enabled", True)
+    monkeypatch.setattr(settings, "scheduler_enabled", False)
+    monkeypatch.setattr(settings, "ranking_worker_enabled", False)
     return source
 
 
@@ -154,3 +156,24 @@ def test_missing_job_description_is_rejected(resume_test_env):
         db.execute("UPDATE jobs SET description='short' WHERE id='job-1'")
     with pytest.raises(resumes.ResumeError, match="too short or missing"):
         resumes.tailor_for_job("job-1")
+
+
+
+def test_api_returns_actionable_409_when_job_not_approved(resume_test_env, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    monkeypatch.setattr(resumes, "GroqClient", lambda: FakeClient())
+    version = resumes.tailor_for_job("job-1")
+    resumes.approve_version(version["version_id"])
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/resumes/versions/{version['version_id']}/record-submission",
+            json={"notes": "Submitted manually"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "The job must also be explicitly approved before a submission is recorded."
+    )

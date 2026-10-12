@@ -1,64 +1,94 @@
 # Autonomous Job Agent
 
-Independent local job-search project using your configured Groq-compatible endpoint and model. It does **not** modify `job-search-pro`.
+Local one-click job-search workflow built with FastAPI, Streamlit, LangChain/LangGraph, SQLite, Adzuna, and a Groq-compatible LLM endpoint. This is a standalone project and does **not** modify `job-search-pro`.
 
-## Run locally (Windows PowerShell)
+## Daily use: one run button
+
+1. Start the FastAPI backend in PowerShell:
+   ```powershell
+   .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+   ```
+2. In a second terminal, start the dashboard:
+   ```powershell
+   .\.venv\Scripts\python.exe -m streamlit run dashboard.py
+   ```
+3. Open the Streamlit URL (usually `http://localhost:8501`), select Adzuna, enter a job query/location, and click **Run complete workflow**.
+
+The LangGraph workflow runs these steps in order:
+
+- Search the configured job source and save records.
+- Deduplicate listings and compute deterministic baseline scores.
+- Use the configured LLM to rank the shortlist; deterministic scores remain available when the LLM is rate-limited or unavailable.
+- Automatically create source-verified resume drafts for up to `AUTO_TAILOR_TOP_N` new, high-scoring real listings (default: 3; score threshold default: 65).
+- Queue those jobs and exact resume versions for review.
+- Optionally email a digest when the button's email checkbox is enabled and SMTP is configured.
+- Update JSON snapshots and store run status, warnings, errors, job records, resume metadata, application status, and events locally.
+
+Repeated discovery does not create another resume version for a job that already has a version. Prior resume versions remain unchanged. The API's `/agent/runs` and dashboard's Monitoring tab show prior workflow runs and failures.
+
+## Application submission boundary
+
+The agent automates **preparation and tracking**, but it does not automatically submit employer forms. Employer sites have different application forms, sign-in requirements, consent prompts, and anti-bot protections. A draft is not evidence that an application has been submitted.
+
+Review the job description and exact generated PDF/DOCX, approve the job and resume version separately, then submit on the employer's official site. Only after submission should you click **Record manual submission**. That records the application status and approved resume version locally; it does not submit anything externally.
+
+The generator selects and reorders only verbatim passages from your master resume. Its audit report lists job requirements not evidenced in the source resume. This cannot prove claims already in the source resume are true, so always review each draft.
+
+## Local storage and JSON records
+
+SQLite is the transactional source of truth at `data/agent.db`. After each complete workflow run and relevant API change, the agent refreshes portable JSON snapshots under `data/exports/`:
+
+- `jobs.json` — listing details, score, rationale, status, and dates
+- `applications.json` — application tracking status and notes
+- `approvals.json` — job approval decisions
+- `resume_versions.json` — resume versions, source/JD hashes, selected resume text, status, and artifact paths
+- `events.json` — recent operations, warnings, and errors
+- `ranking_queue.json` — LLM ranking queue and retry states
+- `agent_runs.json` and `latest_run.json` — run-by-run workflow outcomes
+- `manifest.json` — export time and per-file record counts
+
+Actual master resume files, generated PDFs/DOCX, and per-version tailoring audit JSON files stay under `data/resumes/`. Both `data/` and `.env` are Git-ignored; do not commit personal resume files, generated application data, or credentials. Back up the local `data/` directory securely if you need to preserve history.
+
+You can inspect exports from the dashboard's Monitoring & JSON tab or use `GET /exports/status` and `POST /exports/refresh`.
+
+## Configuration
+
+Install packages after pulling an update:
 
 ```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Create `.env` if you have not already:
+```powershell
 Copy-Item .env.example .env
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Open `http://127.0.0.1:8000/docs`. The optional dashboard runs in another terminal using `streamlit run dashboard.py`.
+Set these values in `.env` (never paste them into chat or commit them):
 
-## Job discovery
+- `ADZUNA_APP_ID`, `ADZUNA_APP_KEY`: Adzuna API credentials
+- `GROQ_API_KEY`: LLM API key
+- `GROQ_API_BASE`, `GROQ_MODEL`: configured OpenAI-compatible endpoint and model
+- `AUTO_TAILOR_ENABLED=true`, `AUTO_TAILOR_TOP_N=3`, `AUTO_TAILOR_MIN_SCORE=65`: automatic drafting limits
+- `JSON_EXPORTS_ENABLED=true`: local JSON snapshot export
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM`, `EMAIL_TO`: optional email digest configuration
 
-For demo data (synthetic records, not actual vacancies):
+SMTP is optional for the discovery and resume workflow. If email is not configured, run without selecting the email checkbox; the workflow will report why an email was not sent.
 
-```powershell
-curl -X POST "http://127.0.0.1:8000/jobs/discover?source=demo"
-curl "http://127.0.0.1:8000/jobs?limit=20"
-```
+Background scheduling stays disabled by default (`SCHEDULER_ENABLED=false`) to match the requested manual morning routine. With it disabled, starting the API does not trigger discovery; you manually click **Run complete workflow** once each morning. If you later enable the scheduler, discovery intervals and daily email time are configured by `DISCOVERY_INTERVAL_HOURS` and `DAILY_REPORT_HOUR`.
 
-For real Adzuna results, set `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` in `.env`, then call `POST /jobs/discover?source=adzuna&what=generative%20ai%20engineer&where=India`.
+## API and troubleshooting
 
-## Resume tailoring and version history
+- `GET /health` — health and active configuration
+- `POST /agent/run` — run the complete workflow
+- `GET /agent/runs` — previous run history
+- `GET /jobs`, `GET /approvals?status=pending` — tracked jobs and pending review
+- `GET /resumes/{job_id}` — resume versions for a job
+- `GET /metrics`, `GET /events` — monitoring
+- `GET /exports/status`, `POST /exports/refresh` — JSON export status and refresh
 
-Resume files are stored locally in `data/resumes`, which is excluded from Git. Do not commit personal resume documents or API keys.
-
-1. Start the API and open `http://127.0.0.1:8000/docs`.
-2. Upload your master resume using `POST /resumes/master` (PDF, DOCX, TXT, or MD; up to 15 MB). The original bytes are retained locally under a content-hash filename, and text is extracted for the tailoring workflow.
-3. Select a real role from `GET /jobs` with a substantive job description.
-4. Call `POST /resumes/tailor/{job_id}`. The generated artifacts include a unique version ID and number, DOCX and PDF resumes, an audit JSON file, source/JD hashes, change notes, and unsupported JD requirements.
-5. Review the version before approving:
-   - `GET /resumes/{job_id}` — version history for one job
-   - `GET /resumes/versions/{version_id}` — version metadata/report fields
-   - `GET /resumes/versions/{version_id}/download?file_type=pdf`
-   - change `file_type` to `docx` for an editable resume or `report` for the JSON audit report
-6. Approve the exact resume version using `POST /resumes/versions/{version_id}/approve`.
-7. Approve the **job itself** using `POST /approvals/{job_id}/decision` with `{"decision":"approved","notes":"Reviewed job and resume version"}`. These are two separate approvals; approving only the resume is not enough.
-8. Submit the application manually on the employer website with that exact approved resume.
-9. Record the completed submission through `POST /resumes/versions/{version_id}/record-submission` with JSON such as `{"notes":"Submitted on employer website"}`. If the job is not approved, the API intentionally returns HTTP 409 Conflict. The dashboard displays the specific reason and disables the record button until the job status is approved.
-
-Each tailoring run creates a new version; it does not overwrite prior versions. The model is instructed to select and reorder **verbatim passages** from the master resume only. Code checks every resume passage against the source and rejects the run if the model introduces new wording. The audit report lists unsupported job requirements separately so the resume does not claim them.
-
-Privacy note: the source resume text and selected job description are sent to the LLM endpoint configured in your local `.env` (currently your Groq-compatible endpoint) for passage selection. Resume files and generated versions remain in your local `data/resumes` folder and are excluded from Git, but the LLM provider processes the text sent to it. Do not use this feature for documents that you are not permitted to share with that provider.
-
-This safeguard prevents the generator from adding new wording, but it cannot prove that claims already present in the original resume are true, nor fully verify whether the selected passages are contextually appropriate. Always inspect the generated PDF/DOCX before approving it.
-
-The project does **not** automatically submit employer applications or bypass CAPTCHAs/access controls. Submission tracking records a manual submission you have completed after both the job and exact resume version have been approved.
-
-## Operations
-
-- Scheduler remains disabled by default. Enable it only after discovery and SMTP are verified.
-- Use `/health`, `/metrics`, and `/events` to inspect the service and activity.
-- Resume documents and reports are local personal data; keep them out of Git.
-
-## Tests
+Run tests:
 
 ```powershell
-python -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q
 ```

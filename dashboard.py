@@ -72,11 +72,10 @@ def display_run(result):
             with st.expander(f"{item['score']:.0f}/100 · {item['title']} — {item['company']} · v{item['version_number']:03d}"):
                 st.write("State:", item["status"])
                 st.write("These drafts are queued for job/resume review, not submitted.")
-                st.markdown(
-                    f"[Open job posting]({(get_job_url(item.get('job_id')) or '#')})"
-                    if get_job_url(item.get("job_id"))
-                    else f"Job ID: {item.get('job_id')}"
-                )
+                if item.get("url"):
+                    st.markdown(f"[Open job posting]({item['url']})")
+                else:
+                    st.caption(f"Job ID: {item.get('job_id')}")
                 for file_type, label in (("pdf", "Download PDF"), ("docx", "Download DOCX"), ("report", "Audit JSON")):
                     st.markdown(
                         f"[{label}]({api}/resumes/versions/{item['version_id']}/download?file_type={file_type})"

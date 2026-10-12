@@ -5,22 +5,27 @@ import streamlit as st
 st.set_page_config(page_title="Autonomous Job Agent", layout="wide")
 api = os.getenv("AGENT_API_BASE", "http://127.0.0.1:8000").rstrip("/")
 st.title("Autonomous Job Agent")
-st.caption("Job discovery, relevance ranking, resume tailoring, approvals, and monitoring")
+st.caption("One-click job discovery → ranking → factual resume drafts → review queue → local JSON records")
+st.info(
+    "The Run button automates discovery, filtering, ranking, resume-draft generation, tracking, and JSON export. "
+    "Employer applications are not submitted automatically: review the job and exact resume version, then submit "
+    "on the employer's site. This avoids sending personal data or applications externally without your review."
+)
 
 
-def get(path, params=None):
+def get(path, params=None, timeout=25):
     try:
-        response = requests.get(api + path, params=params, timeout=15)
+        response = requests.get(api + path, params=params, timeout=timeout)
         response.raise_for_status()
         return response.json()
-    except Exception as exc:
-        st.error(f"API request failed: {exc}")
+    except requests.RequestException as exc:
+        st.error(f"API request failed for {path}: {exc}")
         return None
 
 
-def post(path, params=None, body=None):
+def post(path, params=None, body=None, timeout=300):
     try:
-        response = requests.post(api + path, params=params, json=body, timeout=120)
+        response = requests.post(api + path, params=params, json=body, timeout=timeout)
         response.raise_for_status()
         return response.json()
     except requests.HTTPError as exc:
@@ -41,44 +46,137 @@ def post(path, params=None, body=None):
         return None
 
 
+def display_run(result):
+    st.subheader("Latest run result")
+    status = result.get("status", "unknown")
+    if status == "completed":
+        st.success("Workflow completed.")
+    elif status == "completed_with_warnings":
+        st.warning("Workflow finished with warnings. Review the items below.")
+    else:
+        st.warning(f"Workflow status: {status}")
+    ingestion = result.get("ingestion", {})
+    a, b, c, d = st.columns(4)
+    a.metric("Fetched from source", result.get("found_count", ingestion.get("received", 0)))
+    b.metric("New jobs", ingestion.get("inserted", 0))
+    c.metric("Duplicates refreshed", ingestion.get("duplicates", 0))
+    tailoring = result.get("tailoring", {})
+    d.metric("Resume drafts created", tailoring.get("created_count", 0))
+    if result.get("ranking"):
+        st.markdown("**Ranking**")
+        st.json(result["ranking"])
+    created = tailoring.get("created", [])
+    if created:
+        st.markdown("**New resume drafts awaiting your review**")
+        for item in created:
+            with st.expander(f"{item['score']:.0f}/100 · {item['title']} — {item['company']} · v{item['version_number']:03d}"):
+                st.write("State:", item["status"])
+                st.write("These drafts are queued for job/resume review, not submitted.")
+                st.markdown(
+                    f"[Open job posting]({(get_job_url(item.get('job_id')) or '#')})"
+                    if get_job_url(item.get("job_id"))
+                    else f"Job ID: {item.get('job_id')}"
+                )
+                for file_type, label in (("pdf", "Download PDF"), ("docx", "Download DOCX"), ("report", "Audit JSON")):
+                    st.markdown(
+                        f"[{label}]({api}/resumes/versions/{item['version_id']}/download?file_type={file_type})"
+                    )
+    if tailoring.get("skipped"):
+        with st.expander(f"Tailoring skipped for {len(tailoring['skipped'])} item(s)"):
+            for item in tailoring["skipped"]:
+                st.write("• " + item)
+    if result.get("warnings"):
+        st.markdown("**Warnings / things to check**")
+        for warning in result["warnings"]:
+            st.warning(warning)
+    exports = result.get("json_exports", {})
+    if exports.get("ok"):
+        st.success(f"Local JSON snapshots updated in {exports.get('directory', 'data/exports')}")
+        st.caption("SQLite is the transactional source of truth; JSON files are portable snapshots for tracking and backups.")
+    if result.get("submission_note"):
+        st.caption(result["submission_note"])
+    with st.expander("Complete workflow JSON"):
+        st.json(result)
+
+
+def get_job_url(job_id):
+    if not job_id:
+        return None
+    # Use the jobs cache populated by the caller if available.
+    cache = st.session_state.get("job_url_cache", {})
+    return cache.get(job_id)
+
+
 with st.sidebar:
-    st.subheader("Agent controls")
-    source = st.selectbox("Source", ["demo", "adzuna"])
-    query = st.text_input("Role query", "agentic AI engineer OR generative AI engineer OR GenAI developer")
-    location = st.text_input("Location", "India")
-    email = st.checkbox("Email report after run")
-    if st.button("Run discovery", type="primary"):
-        with st.spinner("Running discovery and ranking..."):
-            result = post("/agent/run", {"source": source, "what": query, "where": location, "send_email": email})
+    st.subheader("Daily run")
+    source = st.selectbox("Job source", ["adzuna", "demo"], index=0)
+    query = st.text_input(
+        "Role query",
+        "agentic AI engineer OR generative AI engineer OR GenAI developer",
+    )
+    location = st.text_input("Location", "Hyderabad")
+    email = st.checkbox("Send email digest after run", value=False)
+    st.caption("Automatic resume drafting processes up to 3 new high-scoring jobs per run by default.")
+    if st.button("Run complete workflow", type="primary", use_container_width=True):
+        with st.spinner("Fetching jobs, filtering duplicates, ranking matches, preparing resume drafts, and exporting JSON…"):
+            result = post(
+                "/agent/run",
+                {"source": source, "what": query, "where": location, "send_email": email},
+                timeout=600,
+            )
         if result:
-            st.success("Run completed")
-            st.json(result)
-    if st.button("Send email report"):
-        result = post("/reports/email")
-        if result:
-            st.json(result)
+            st.session_state["last_agent_run_result"] = result
+            st.rerun()
+    left, right = st.columns(2)
+    if left.button("Refresh data", use_container_width=True):
+        st.rerun()
+    if right.button("Send digest", use_container_width=True):
+        report = post("/reports/email", timeout=60)
+        if report:
+            st.json(report)
 
 health = get("/health") or {}
 metrics = get("/metrics") or {}
-a, b, c, d = st.columns(4)
-a.metric("Jobs", metrics.get("jobs_total", 0))
-b.metric("Pending approvals", metrics.get("approvals_pending", 0))
-c.metric("Submitted", metrics.get("applications_submitted", 0))
-d.metric("Scheduler", "Enabled" if health.get("scheduler_enabled") else "Manual")
+a, b, c, d, e = st.columns(5)
+a.metric("Jobs tracked", metrics.get("jobs_total", 0))
+b.metric("Pending review", metrics.get("approvals_pending", 0))
+c.metric("Resume versions", metrics.get("resume_versions_total", 0))
+d.metric("Submitted (tracked)", metrics.get("applications_submitted", 0))
+e.metric("Scheduler", "Enabled" if health.get("scheduler_enabled") else "Manual")
 
-jobs_tab, approvals_tab, resumes_tab, events_tab = st.tabs(
-    ["Ranked jobs", "Approval queue", "Resume tailoring", "Monitoring"]
+with st.expander("Workflow configuration", expanded=False):
+    st.json({
+        "API status": health.get("status", "unknown"),
+        "LLM enabled": health.get("llm_enabled"),
+        "model": health.get("model"),
+        "auto-tailoring enabled": health.get("auto_tailor_enabled"),
+        "maximum new drafts per run": health.get("auto_tailor_top_n"),
+        "minimum deterministic score": health.get("auto_tailor_min_score"),
+        "JSON exports enabled": health.get("json_exports_enabled"),
+        "background scheduler enabled": health.get("scheduler_enabled"),
+    })
+
+last_result = st.session_state.get("last_agent_run_result")
+if last_result:
+    display_run(last_result)
+
+jobs_tab, approvals_tab, resumes_tab, monitoring_tab = st.tabs(
+    ["Ranked jobs", "Approval queue", "Resume drafts", "Monitoring & JSON"]
 )
 
 with jobs_tab:
     minimum = st.slider("Minimum score", 0, 100, 0)
     jobs = get("/jobs", {"limit": 100, "min_score": minimum}) or []
+    st.session_state["job_url_cache"] = {item["id"]: item.get("url") for item in jobs}
+    if not jobs:
+        st.info("No jobs yet. Choose Adzuna and click Run complete workflow.")
     for job in jobs:
         with st.expander(f"{job['score']:.0f}/100 · {job['title']} — {job['company']}"):
+            st.caption(f"{job.get('location', 'Location not stated')} · {job.get('source', 'unknown')} · {job.get('status', 'discovered')}")
             st.write(job.get("score_reasons", []))
             st.write(job.get("description", ""))
             st.markdown(f"[Open job posting]({job['url']})")
-            if st.button("Queue for approval", key="queue_" + job["id"]):
+            if st.button("Queue job for review", key="queue_" + job["id"]):
                 result = post("/approvals/" + job["id"])
                 if result:
                     st.success(result["message"])
@@ -87,19 +185,21 @@ with jobs_tab:
 with approvals_tab:
     pending = get("/approvals", {"status": "pending"}) or []
     if not pending:
-        st.info("No pending approvals.")
+        st.info("No pending job approvals. New resume drafts should appear here after a successful workflow run.")
     for item in pending:
-        with st.expander(f"{item['title']} — {item['company']} ({item['score']:.0f}/100)"):
+        with st.expander(f"{item['score']:.0f}/100 · {item['title']} — {item['company']}"):
             st.markdown(f"[Open job posting]({item['url']})")
             st.write(item.get("location", ""))
-            notes = st.text_input("Notes", key="notes_" + item["job_id"])
+            notes = st.text_input("Review notes", key="notes_" + item["job_id"])
             left, right = st.columns(2)
             if left.button("Approve job", key="yes_" + item["job_id"]):
-                if post(f"/approvals/{item['job_id']}/decision", body={"decision": "approved", "notes": notes}):
-                    st.success("Job approved. Review and approve a specific resume version in the Resume tailoring tab before you apply.")
+                approved = post(f"/approvals/{item['job_id']}/decision", body={"decision": "approved", "notes": notes})
+                if approved:
+                    st.success("Job approved. Review and approve the exact resume version separately.")
                     st.rerun()
             if right.button("Reject job", key="no_" + item["job_id"]):
-                if post(f"/approvals/{item['job_id']}/decision", body={"decision": "rejected", "notes": notes}):
+                rejected = post(f"/approvals/{item['job_id']}/decision", body={"decision": "rejected", "notes": notes})
+                if rejected:
                     st.success("Job rejected.")
                     st.rerun()
 
@@ -108,16 +208,10 @@ with resumes_tab:
     master = get("/resumes/master") or {"configured": False}
     if master.get("configured"):
         st.success(f"Master resume configured · {master.get('characters_extracted', 0):,} extracted characters")
-        st.caption("Uploading a new master preserves the prior original snapshot. Existing job-specific versions remain unchanged.")
     else:
-        st.info("Upload your master resume to begin. Supported formats: PDF, DOCX, TXT, and MD; maximum 15 MB.")
-
-    uploaded = st.file_uploader(
-        "Upload master resume",
-        type=["pdf", "docx", "txt", "md"],
-        key="master_resume_upload",
-    )
-    if st.button("Save as master resume", disabled=uploaded is None):
+        st.info("Upload your master resume once. The daily workflow will reuse it for new suitable jobs.")
+    uploaded = st.file_uploader("Upload master resume", type=["pdf", "docx", "txt", "md"], key="master_resume_upload")
+    if st.button("Save master resume", disabled=uploaded is None):
         try:
             response = requests.post(
                 api + "/resumes/master",
@@ -125,45 +219,40 @@ with resumes_tab:
                 timeout=90,
             )
             response.raise_for_status()
-            st.success("Master resume saved locally in the agent's data/resumes folder.")
+            st.success("Master resume saved to the local data/resumes folder.")
             st.json(response.json())
             st.rerun()
-        except Exception as exc:
+        except requests.RequestException as exc:
             st.error(f"Master resume upload failed: {exc}")
 
     st.divider()
-    st.subheader("Tailor for a job")
+    st.subheader("Resume version history")
     resume_jobs = get("/jobs", {"limit": 200}) or []
     if not resume_jobs:
-        st.info("Discover jobs first. A substantive job description is needed for tailoring.")
+        st.info("Discover jobs first.")
     else:
         jobs_by_id = {item["id"]: item for item in resume_jobs}
+        st.session_state["job_url_cache"] = {item["id"]: item.get("url") for item in resume_jobs}
         selected_job_id = st.selectbox(
-            "Choose a job",
+            "Choose job",
             options=list(jobs_by_id),
             format_func=lambda job_id: (
-                f"{jobs_by_id[job_id]['title']} — {jobs_by_id[job_id]['company']} "
-                f"({jobs_by_id[job_id]['score']:.0f}/100)"
+                f"{jobs_by_id[job_id]['title']} — {jobs_by_id[job_id]['company']} ({jobs_by_id[job_id]['score']:.0f}/100)"
             ),
         )
         selected_job = jobs_by_id[selected_job_id]
         st.markdown(f"[Open job posting]({selected_job['url']})")
-        st.caption(f"Location: {selected_job.get('location', 'Not specified')} · Source: {selected_job.get('source', 'unknown')} · Agent status: {selected_job.get('status', 'unknown')}")
-        with st.expander("Job description"):
-            st.write(selected_job.get("description") or "No description available.")
-        if st.button("Generate a new resume version", type="primary", key="tailor_resume"):
-            with st.spinner("Selecting relevant source-backed resume passages and generating PDF/DOCX..."):
-                result = post(f"/resumes/tailor/{selected_job_id}")
-            if result:
-                st.success(f"Created resume v{result['version_number']:03d}. Review it before approving.")
-                st.json(result)
-                st.rerun()
-
         history = get(f"/resumes/{selected_job_id}") or {"versions": []}
         versions = history.get("versions", [])
-        st.subheader("Version history")
         if not versions:
-            st.info("No resume versions for this job yet.")
+            st.info("The workflow creates drafts automatically for eligible new jobs. You can also generate a new version manually.")
+            if st.button("Generate resume version now", key="manual_tailor"):
+                with st.spinner("Validating source passages and creating PDF/DOCX…"):
+                    tailored = post(f"/resumes/tailor/{selected_job_id}", timeout=180)
+                if tailored:
+                    st.success(f"Created version v{tailored['version_number']:03d}.")
+                    st.json(tailored)
+                    st.rerun()
         for version in versions:
             version_id = version["version_id"]
             with st.expander(f"v{version['version_number']:03d} · {version['status']} · {version.get('created_at', '')}"):
@@ -173,63 +262,79 @@ with resumes_tab:
                     st.markdown("**Tailoring notes**")
                     st.write(version["change_notes"])
                 if version.get("unsupported_requirements"):
-                    st.markdown("**Job requirements not evidenced in the master resume**")
-                    st.warning("\n".join("• " + value for value in version["unsupported_requirements"]))
+                    st.warning("Requirements not evidenced in your master resume:\n" + "\n".join("• " + value for value in version["unsupported_requirements"]))
                 if version.get("factuality_flags"):
-                    st.markdown("**Factuality safeguards**")
-                    st.caption("\n".join("• " + value for value in version["factuality_flags"]))
-
-                download_cols = st.columns(3)
-                download_cols[0].markdown(
-                    f"[Download PDF]({api}/resumes/versions/{version_id}/download?file_type=pdf)"
-                )
-                download_cols[1].markdown(
-                    f"[Download DOCX]({api}/resumes/versions/{version_id}/download?file_type=docx)"
-                )
-                download_cols[2].markdown(
-                    f"[Audit report]({api}/resumes/versions/{version_id}/download?file_type=report)"
-                )
-
+                    st.caption("Factuality safeguards:\n" + "\n".join("• " + value for value in version["factuality_flags"]))
+                cols = st.columns(3)
+                cols[0].markdown(f"[Download PDF]({api}/resumes/versions/{version_id}/download?file_type=pdf)")
+                cols[1].markdown(f"[Download DOCX]({api}/resumes/versions/{version_id}/download?file_type=docx)")
+                cols[2].markdown(f"[Audit JSON]({api}/resumes/versions/{version_id}/download?file_type=report)")
                 if version["status"] == "needs_review":
                     if st.button("Approve this exact resume version", key="approve_resume_" + version_id):
                         approved = post(f"/resumes/versions/{version_id}/approve")
                         if approved:
-                            st.success("Resume version approved. The job itself must also be approved in the Approval queue.")
+                            st.success("Resume version approved. The job itself must also be approved.")
                             st.rerun()
                 elif version["status"] == "approved":
                     job_is_approved = selected_job.get("status") == "approved_to_apply"
                     if job_is_approved:
-                        st.info("Resume version and job are approved. After submitting this exact file manually on the employer's website, record that submission below.")
+                        st.info("Both job and resume version are approved. After submitting manually on the employer's website, record it below.")
                     else:
-                        st.warning(
-                            "This resume version is approved, but the job is not approved yet. "
-                            "Go to Ranked jobs and click 'Queue for approval' if needed, then open Approval queue "
-                            "and click 'Approve job'. Return here afterward. Submission recording stays blocked until then."
-                        )
-                    notes = st.text_input("Submission note (optional)", key="submission_note_" + version_id)
+                        st.warning("Resume approved, but the job is not. Approve the job in the Approval queue first.")
+                    notes = st.text_input("Submission notes (optional)", key="submission_notes_" + version_id)
                     if st.button(
                         "Record manual submission",
                         key="record_submission_" + version_id,
                         disabled=not job_is_approved,
-                        help=None if job_is_approved else "Approve this job in the Approval queue first.",
                     ):
-                        result = post(f"/resumes/versions/{version_id}/record-submission", body={"notes": notes})
-                        if result:
-                            st.success("Submission recorded against this exact resume version.")
+                        st.warning("Use this only after you have actually submitted the application externally.")
+                        recorded = post(
+                            f"/resumes/versions/{version_id}/record-submission",
+                            body={"notes": notes or "Submitted manually on employer website"},
+                        )
+                        if recorded:
+                            st.success("Manual submission recorded in local tracking.")
                             st.rerun()
-                elif version["status"] == "submitted":
-                    st.success(f"Submission recorded on {version.get('submitted_at') or 'timestamp unavailable'}")
 
-    st.warning(
-        "Factuality safeguard: generated resume content must match passages from your master resume. "
-        "This blocks added wording, but it cannot prove the original claims are true. Inspect the PDF/DOCX before approval. "
-        "This app does not auto-submit employer forms; you submit manually, then record the exact version here."
-    )
+with monitoring_tab:
+    st.subheader("Local JSON snapshots")
+    export_status = get("/exports/status") or {}
+    if export_status.get("ok"):
+        st.success(f"Export directory: {export_status.get('directory', 'data/exports')}")
+        st.caption(f"Last export: {export_status.get('exported_at', 'not recorded')}")
+        st.write("Files:", export_status.get("files", []))
+        st.json(export_status.get("record_counts", {}))
+    else:
+        st.warning(export_status.get("error") or "No JSON export snapshot found yet.")
+    if st.button("Refresh JSON snapshots", type="secondary"):
+        export = post("/exports/refresh", timeout=60)
+        if export:
+            st.success("Local JSON snapshots refreshed.")
+            st.json(export)
+            st.rerun()
 
-with events_tab:
-    st.write("Health")
-    st.json(health)
-    st.write("Metrics")
-    st.json(metrics)
-    st.write("Recent events")
-    st.json(get("/events", {"limit": 100}) or [])
+    st.divider()
+    st.subheader("Agent run history")
+    runs = get("/agent/runs", {"limit": 30}) or []
+    if runs:
+        for item in runs:
+            with st.expander(f"{item.get('status', 'unknown')} · {item.get('started_at', '')} · {item.get('run_id', '')[:8]}"):
+                st.write("Source:", item.get("source"))
+                st.write("Query:", item.get("query"))
+                st.write("Location:", item.get("location"))
+                if item.get("error"):
+                    st.error(item["error"])
+                if item.get("summary"):
+                    st.json(item["summary"])
+    else:
+        st.info("No workflow runs recorded yet.")
+
+    st.divider()
+    st.subheader("Recent system events")
+    events = get("/events", {"limit": 100}) or []
+    if events:
+        for event in events[:30]:
+            with st.expander(f"{event.get('level', 'INFO')} · {event.get('event', '')} · {event.get('created_at', '')}"):
+                st.json(event.get("details", {}))
+    else:
+        st.info("No events recorded yet.")

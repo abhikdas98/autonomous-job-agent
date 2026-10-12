@@ -363,6 +363,9 @@ def record_version_submission(version_id: str, notes: str = "") -> dict[str, Any
     if version["status"] != "approved":
         raise ResumeError("Only the exact approved resume version can be recorded as submitted.")
     with connection() as c:
+        approval = c.execute("SELECT status FROM approvals WHERE job_id=?", (version["job_id"],)).fetchone()
+        if not approval or approval["status"] != "approved":
+            raise ResumeError("The job must also be explicitly approved before a submission is recorded.")
         c.execute("UPDATE resume_versions SET status='submitted', submitted_at=CURRENT_TIMESTAMP, submission_notes=? WHERE version_id=?", (notes, version_id))
         c.execute("""
             INSERT INTO applications(job_id,status,notes) VALUES(?,'submitted',?)

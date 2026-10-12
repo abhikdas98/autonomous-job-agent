@@ -295,6 +295,29 @@ with resumes_tab:
                             st.success("Manual submission recorded in local tracking.")
                             st.rerun()
 
+
+    if selected_job.get("status") in {"submitted", "interview", "rejected", "offer", "withdrawn"}:
+        st.divider()
+        st.subheader("Application follow-up")
+        st.caption(f"Currently tracked as: {selected_job.get('status')}")
+        follow_status = st.selectbox(
+            "Update status after an employer response",
+            ["Select status…", "interview", "offer", "rejected", "withdrawn"],
+            key="follow_status_" + selected_job_id,
+        )
+        follow_notes = st.text_input("Follow-up notes", key="follow_notes_" + selected_job_id)
+        if st.button("Save application update", key="save_followup_" + selected_job_id):
+            if follow_status == "Select status…":
+                st.warning("Choose a status first.")
+            else:
+                saved = post(
+                    f"/applications/{selected_job_id}/status",
+                    body={"status": follow_status, "notes": follow_notes},
+                )
+                if saved:
+                    st.success("Application status saved to local tracking.")
+                    st.rerun()
+
 with monitoring_tab:
     st.subheader("Local JSON snapshots")
     export_status = get("/exports/status") or {}

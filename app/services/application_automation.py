@@ -49,11 +49,12 @@ def approve_application_batch(items: list[dict[str, str]]) -> dict[str, Any]:
                 raise ApplicationAutomationError(f"Job not found: {job_id}")
             if row["version_id"] != version_id:
                 raise ApplicationAutomationError(f"Resume version not found: {version_id}")
-            if row["approval_status"] != "approved":
-                raise ApplicationAutomationError(f"Job {job_id} must be approved before it can be queued.")
-            if row["resume_status"] != "approved":
+            if row["approval_status"] == "rejected":
+                raise ApplicationAutomationError(f"Job {job_id} was rejected and cannot be queued.")
+            if row["resume_status"] not in {"needs_review", "approved"}:
                 raise ApplicationAutomationError(
-                    f"Resume version {version_id} must be approved before it can be queued."
+                    f"Resume version {version_id} is not eligible for batch approval "
+                    f"(current status: {row['resume_status']})."
                 )
             # The selected immutable resume version must belong to this exact job.
             version_job = db.execute(
@@ -65,6 +66,24 @@ def approve_application_batch(items: list[dict[str, str]]) -> dict[str, Any]:
                 )
             if row["queue_status"] == "submitted":
                 raise ApplicationAutomationError(f"Job {job_id} has already been submitted.")
+            # This endpoint is the explicit batch HITL action: approve the job and
+            # the exact selected resume version together before queueing automation.
+            db.execute(
+                """INSERT INTO approvals(job_id,status,notes,decided_at)
+                   VALUES(?,'approved','Approved in application batch',CURRENT_TIMESTAMP)
+                   ON CONFLICT(job_id) DO UPDATE SET status='approved',
+                     notes='Approved in application batch', decided_at=CURRENT_TIMESTAMP""",
+                (job_id,),
+            )
+            db.execute(
+                "UPDATE jobs SET status='approved_to_apply' WHERE id=?", (job_id,)
+            )
+            db.execute(
+                """UPDATE resume_versions SET status='approved',
+                   approved_at=COALESCE(approved_at,CURRENT_TIMESTAMP)
+                   WHERE version_id=?""",
+                (version_id,),
+            )
             db.execute(
                 """INSERT INTO application_automation_queue(job_id,version_id,status,checkpoint,result_json)
                    VALUES(?,?,'approved','ready_for_browser_automation','{}')

@@ -48,10 +48,20 @@ def ingest_jobs(items):
 
 
 def list_jobs(limit=50, min_score=0):
+    # Include persisted feedback and review-queue state so the dashboard can
+    # render completed actions instead of offering the same action repeatedly.
     with connection() as c:
-        rows = c.execute("SELECT * FROM jobs WHERE score>=? ORDER BY score DESC,posted_at DESC LIMIT ?",
-                         (min_score, min(max(limit, 1), 200))).fetchall()
-    return [{**dict(row), "score_reasons": json.loads(row["score_reasons"])} for row in rows]
+        rows = c.execute(
+            """SELECT j.*, f.feedback AS feedback, f.reason AS feedback_reason,
+                      a.status AS approval_status
+               FROM jobs j
+               LEFT JOIN job_feedback f ON f.job_id=j.id
+               LEFT JOIN approvals a ON a.job_id=j.id
+               WHERE j.score>=?
+               ORDER BY j.score DESC,j.posted_at DESC LIMIT ?""",
+            (min_score, min(max(limit, 1), 200)),
+        ).fetchall()
+    return [{**dict(row), "score_reasons": json.loads(row["score_reasons"] or "[]")} for row in rows]
 
 
 def get_job(job_id):

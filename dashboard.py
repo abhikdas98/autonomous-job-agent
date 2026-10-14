@@ -23,6 +23,28 @@ def get(path, params=None, timeout=25):
         return None
 
 
+def delete(path, timeout=25):
+    try:
+        response = requests.delete(api + path, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+    except requests.HTTPError as exc:
+        response = exc.response
+        detail = None
+        if response is not None:
+            try:
+                payload = response.json()
+                detail = payload.get("detail") if isinstance(payload, dict) else None
+            except ValueError:
+                detail = None
+        status_code = response.status_code if response is not None else "unknown"
+        st.error(f"Request failed ({status_code}): {detail or str(exc)}")
+        return None
+    except requests.RequestException as exc:
+        st.error(f"Could not reach the API: {exc}")
+        return None
+
+
 def post(path, params=None, body=None, timeout=300):
     try:
         response = requests.post(api + path, params=params, json=body, timeout=timeout)
@@ -186,6 +208,13 @@ with jobs_tab:
                 st.success(f"Feedback recorded: {feedback_labels.get(current_feedback, current_feedback)}")
                 if job.get("feedback_reason"):
                     st.caption("Your note: " + job["feedback_reason"])
+                if st.button("Undo feedback", key="undo_feedback_" + job["id"], type="secondary"):
+                    cleared = delete(f"/jobs/{job['id']}/feedback", timeout=20)
+                    if cleared and cleared.get("cleared"):
+                        st.success("Feedback removed. You can now rate this job again.")
+                        st.rerun()
+                    elif cleared:
+                        st.info("No saved feedback remained to remove.")
             feedback_reason = st.text_input(
                 "Feedback note (optional)",
                 key="feedback_reason_" + job["id"],

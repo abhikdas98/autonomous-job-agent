@@ -151,3 +151,35 @@ def test_feedback_can_be_cleared_after_accidental_rating(local_db):
     assert list_feedback() == []
     assert memory_summary()["feedback_total"] == 0
     assert clear_feedback(job_id)["cleared"] is False
+
+
+def test_heartbeat_keeps_old_running_run_from_stale_recovery(local_db):
+    from app.db import heartbeat_agent_run
+
+    with connection() as db:
+        db.execute(
+            """INSERT INTO agent_runs(run_id,source,query,location,status,started_at)
+               VALUES('live','demo','q','India','running',datetime('now','-2 hours'))"""
+        )
+
+    assert heartbeat_agent_run("live") is True
+    assert heartbeat_agent_run("missing") is False
+    init_db()
+
+    with connection() as db:
+        row = db.execute(
+            "SELECT status,heartbeat_at FROM agent_runs WHERE run_id='live'"
+        ).fetchone()
+    assert row["status"] == "running"
+    assert row["heartbeat_at"] is not None
+
+
+def test_connection_enforces_sqlite_foreign_keys(local_db):
+    import sqlite3
+
+    with connection() as db:
+        assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO approvals(job_id,status) VALUES('missing-job','pending')"
+            )

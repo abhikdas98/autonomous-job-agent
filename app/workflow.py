@@ -7,6 +7,7 @@ digest, and exports the local state as JSON.
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, TypedDict
@@ -14,7 +15,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from app.config import settings
-from app.db import connection, log_event
+from app.db import connection, heartbeat_agent_run, log_event
 from app.notifications.email_report import send_report
 from app.services.jobs import ingest_jobs, list_jobs, queue_approval
 from app.services.llm_ranking import rank_shortlist
@@ -38,22 +39,8 @@ class AgentState(TypedDict, total=False):
     result: dict[str, Any]
 
 
-def _record_run_started(state: AgentState) -> None:
-    with connection() as db:
-        db.execute(
-            """INSERT INTO agent_runs(run_id, source, query, location, status)
-               VALUES(?, ?, ?, ?, 'running')""",
-            (state["run_id"], state["source"], state["query"], state["location"]),
-        )
-
-
 def _discover(state: AgentState) -> dict[str, Any]:
     try:
-        _record_run_started(state)
-        log_event("agent_run_started", {
-            "run_id": state["run_id"], "source": state["source"],
-            "query": state["query"], "location": state["location"],
-        })
         if state["source"] == "demo":
             jobs = search_demo_jobs(state["query"], state["location"])
         elif state["source"] == "adzuna":
@@ -282,20 +269,64 @@ def build_agent_graph():
 _AGENT_GRAPH = build_agent_graph()
 
 
+def _heartbeat_loop(run_id: str, stop_event: threading.Event, interval_seconds: int = 60) -> None:
+    """Keep a live workflow from being mistaken for a crashed process."""
+    while not stop_event.wait(interval_seconds):
+        try:
+            if not heartbeat_agent_run(run_id):
+                return
+        except Exception:
+            # A temporary SQLite lock must not crash the workflow. The next
+            # heartbeat retries; stale recovery remains the final safeguard.
+            continue
+
+
 def run_agent_workflow(source: str = "adzuna", what: str | None = None,
                        where: str | None = None, send_email: bool = False) -> dict[str, Any]:
     query = what or settings.default_job_query
     location = where or settings.default_job_location
-    state = _AGENT_GRAPH.invoke({
-        "run_id": uuid.uuid4().hex,
+    run_id = uuid.uuid4().hex
+    initial_state: AgentState = {
+        "run_id": run_id,
         "source": source,
         "query": query,
         "location": location,
         "send_email": send_email,
         "warnings": [],
+    }
+    with connection() as db:
+        db.execute(
+            """INSERT INTO agent_runs(run_id, source, query, location, status, heartbeat_at)
+               VALUES(?, ?, ?, ?, 'running', CURRENT_TIMESTAMP)""",
+            (run_id, source, query, location),
+        )
+    log_event("agent_run_started", {
+        "run_id": run_id, "source": source, "query": query, "location": location,
     })
-    return state.get("result", {
-        "status": "failed",
-        "error": state.get("fatal_error", "Workflow ended without a result."),
-        "warnings": state.get("warnings", []),
-    })
+
+    stop_event = threading.Event()
+    heartbeat_thread = threading.Thread(
+        target=_heartbeat_loop, args=(run_id, stop_event),
+        name=f"agent-heartbeat-{run_id[:8]}", daemon=True,
+    )
+    heartbeat_thread.start()
+    try:
+        state = _AGENT_GRAPH.invoke(initial_state)
+        return state.get("result", {
+            "status": "failed",
+            "error": state.get("fatal_error", "Workflow ended without a result."),
+            "warnings": state.get("warnings", []),
+        })
+    except Exception as exc:
+        message = str(exc)[:300]
+        with connection() as db:
+            db.execute(
+                """UPDATE agent_runs SET status='failed', completed_at=CURRENT_TIMESTAMP,
+                   error=? WHERE run_id=? AND status='running'""",
+                (message, run_id),
+            )
+        log_event("agent_workflow_crashed", {"run_id": run_id, "error": message}, "ERROR")
+        raise
+    finally:
+        stop_event.set()
+        heartbeat_thread.join(timeout=2)

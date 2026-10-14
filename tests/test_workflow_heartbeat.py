@@ -52,12 +52,13 @@ def test_workflow_marks_unhandled_graph_error_failed(workflow_db, monkeypatch):
             raise RuntimeError("unexpected graph failure")
 
     monkeypatch.setattr(workflow, "_AGENT_GRAPH", BrokenGraph())
+    monkeypatch.setattr(workflow.uuid, "uuid4", lambda: type("RunId", (), {"hex": "expected-crash-run"})())
     with pytest.raises(RuntimeError, match="unexpected graph failure"):
         workflow.run_agent_workflow(source="demo", what="GenAI Engineer", where="India")
 
     with connection() as db:
         row = db.execute(
-            "SELECT status,error FROM agent_runs ORDER BY started_at DESC LIMIT 1"
+            "SELECT status,error FROM agent_runs WHERE run_id='expected-crash-run'"
         ).fetchone()
     assert row["status"] == "failed"
     assert row["error"] == "unexpected graph failure"

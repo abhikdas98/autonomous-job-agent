@@ -8,9 +8,11 @@ from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.db import init_db, log_event, metrics_snapshot, connection
-from app.models import (ManualJobRequest, ApprovalDecision, ApplicationStatus, ResumeSubmissionRecord, JobSearchPreferences, JobFeedback, BatchApplicationApproval)
+from app.models import (ManualJobRequest, ApprovalDecision, ApplicationStatus, ResumeSubmissionRecord, JobSearchPreferences, JobFeedback, BatchApplicationApproval, ApplicationProfile)
 from app.services.jobs import ingest_jobs, list_jobs, queue_approval, list_approvals, decide_approval, update_application
 from app.services.application_automation import (ApplicationAutomationError, approve_application_batch, list_automation_queue, mark_intervention, record_verified_submission)
+from app.services.application_profile import read_application_profile, save_application_profile
+from app.services.browser_automation import BrowserAutomationError, run_approved_applications
 from app.agent import run_discovery
 from app.notifications.email_report import send_report
 from app.services.llm_ranking import rank_shortlist, queue_snapshot
@@ -211,6 +213,33 @@ def application_automation_queue(
     limit: int = Query(default=100, ge=1, le=200),
 ):
     return list_automation_queue(status=status, limit=limit)
+
+
+@app.get("/applications/profile")
+def get_application_profile():
+    try:
+        return read_application_profile()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.put("/applications/profile")
+def put_application_profile(body: ApplicationProfile):
+    try:
+        return save_application_profile(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/applications/automation/run-approved")
+def run_approved_application_batch(limit: int = Query(default=5, ge=1, le=25)):
+    """Run the explicitly approved batch in a visible browser session."""
+    try:
+        result = run_approved_applications(limit=limit)
+        result["json_exports"] = _refresh_exports()
+        return result
+    except BrowserAutomationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.post("/applications/automation/{job_id}/intervention")

@@ -57,7 +57,7 @@ def test_batch_queues_exact_approved_job_resume_pairs(automation_db):
 
 def test_batch_rejects_unapproved_job(automation_db):
     decide_approval("job-2", "rejected")
-    with pytest.raises(ApplicationAutomationError, match="must be approved"):
+    with pytest.raises(ApplicationAutomationError, match="was rejected"):
         approve_application_batch([
             {"job_id": "job-1", "version_id": "version-job-1"},
             {"job_id": "job-2", "version_id": "version-job-2"},

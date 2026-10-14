@@ -45,6 +45,7 @@ Memory API endpoints:
 - `GET /memory/preferences` and `PUT /memory/preferences` — read/save search preferences
 - `GET /memory/summary` and `GET /memory/feedback` — inspect saved memory
 - `POST /jobs/{job_id}/feedback` — save `interested`, `not_interested`, `irrelevant`, or `applied` feedback with an optional reason
+- `DELETE /jobs/{job_id}/feedback` — remove a mistaken feedback record; the Ranked jobs tab provides an **Undo feedback** action
 
 ## Local storage and JSON records
 
@@ -98,7 +99,7 @@ Background scheduling stays disabled by default (`SCHEDULER_ENABLED=false`) to m
 - `GET /jobs`, `GET /approvals?status=pending` — jobs and approval queue
 - `GET /resumes/{job_id}` — resume version history
 - `GET /metrics`, `GET /events` — monitoring
-- `GET/PUT /memory/preferences`, `GET /memory/summary`, `GET /memory/feedback`, `POST /jobs/{job_id}/feedback` — persistent job-search memory
+- `GET/PUT /memory/preferences`, `GET /memory/summary`, `GET /memory/feedback`, `POST /jobs/{job_id}/feedback`, `DELETE /jobs/{job_id}/feedback` — persistent job-search memory and feedback correction
 - `GET /exports/status`, `POST /exports/refresh` — JSON export status and refresh
 
 Run tests:

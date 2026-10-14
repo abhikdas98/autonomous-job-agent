@@ -79,7 +79,7 @@ def _profile_value(label: str, profile: dict[str, Any]) -> str | None:
     if not normalized:
         return None
     for key, aliases in ALIASES.items():
-        if any(_normal(alias) == normalized or _normal(alias) in normalized for alias in aliases):
+        if any(normalized == _normal(alias) or normalized.startswith(_normal(alias) + " ") for alias in aliases):
             value = str(profile.get(key, "")).strip()
             if value:
                 return value
@@ -254,6 +254,11 @@ def _run_one(page: Any, item: dict[str, Any], profile: dict[str, Any]) -> dict[s
             "message": "Could not identify one unambiguous submission control.",
         })
     before_text = _visible_text(page)
+    if CONFIRMATION_PATTERN.search(before_text):
+        return mark_intervention(job_id, "manual_review", {
+            "message": "The page already appears to show a submission confirmation. Verify the application status before retrying.",
+            "url": str(page.url)[:500],
+        })
     submit.click(timeout=10000)
     try:
         page.wait_for_load_state("domcontentloaded", timeout=10000)
@@ -262,7 +267,7 @@ def _run_one(page: Any, item: dict[str, Any], profile: dict[str, Any]) -> dict[s
     page.wait_for_timeout(1500)
     after_text = _visible_text(page)
     match = CONFIRMATION_PATTERN.search(after_text)
-    if match and after_text != before_text:
+    if match and not CONFIRMATION_PATTERN.search(before_text) and after_text != before_text:
         evidence = f"{page.url} | {match.group(0)}"
         return record_verified_submission(job_id, evidence[:500])
     return mark_intervention(job_id, "manual_review", {

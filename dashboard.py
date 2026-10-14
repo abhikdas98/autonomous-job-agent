@@ -417,6 +417,12 @@ with apply_tab:
                 st.json(queued["result"])
             if queued["status"] == "needs_intervention":
                 st.warning("This application needs a checkpoint resolved before it can continue.")
+                st.caption("Resolve the issue in your profile or employer session first, then retry.")
+                if st.button("Retry this application", key=f"retry_application_{queued['job_id']}"):
+                    retried = post(f"/applications/automation/{queued['job_id']}/retry", timeout=30)
+                    if retried:
+                        st.success("Application returned to the approved queue.")
+                        st.rerun()
 
 with resumes_tab:
     st.subheader("Master resume")

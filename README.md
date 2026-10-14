@@ -37,8 +37,8 @@ The browser adapter is an optional, conservative first implementation. It uses a
 Install the optional browser dependencies in your existing virtual environment:
 
 ```powershell
-..venv\Scripts\python.exe -m pip install -r requirements-browser.txt
-..venv\Scripts\python.exe -m playwright install chromium
+.\.venv\Scripts\python.exe -m pip install -r requirements-browser.txt
+.\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
 Then restart the FastAPI API and Streamlit dashboard. In **Batch applications**:

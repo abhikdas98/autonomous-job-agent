@@ -1,3 +1,4 @@
+import json
 import os
 import requests
 import streamlit as st
@@ -286,6 +287,56 @@ with approvals_tab:
                     st.rerun()
 
 with apply_tab:
+    st.subheader("Verified application profile")
+    st.caption(
+        "Saved locally beside the SQLite database. These values are used for browser form filling; "
+        "they are not automatically sent to the LLM."
+    )
+    profile_result = get("/applications/profile") or {"configured": False, "profile": {}}
+    saved_profile = profile_result.get("profile", {})
+    with st.form("application_profile_form"):
+        p1, p2 = st.columns(2)
+        full_name = p1.text_input("Full name", saved_profile.get("full_name", ""))
+        email = p2.text_input("Email", saved_profile.get("email", ""))
+        phone = p1.text_input("Phone", saved_profile.get("phone", ""))
+        location_value = p2.text_input("Location / city", saved_profile.get("location", ""))
+        linkedin_url = p1.text_input("LinkedIn URL", saved_profile.get("linkedin_url", ""))
+        github_url = p2.text_input("GitHub URL", saved_profile.get("github_url", ""))
+        current_company = p1.text_input("Current / most recent company", saved_profile.get("current_company", ""))
+        current_title = p2.text_input("Current / most recent title", saved_profile.get("current_title", ""))
+        years_experience = p1.text_input("Years of experience", saved_profile.get("years_experience", ""))
+        notice_period = p2.text_input("Notice period", saved_profile.get("notice_period", ""))
+        work_authorization = p1.text_input("Work authorization (exact answer)", saved_profile.get("work_authorization", ""))
+        requires_sponsorship = p2.text_input("Requires sponsorship (exact answer)", saved_profile.get("requires_sponsorship", ""))
+        desired_salary = p1.text_input("Desired salary / CTC (exact answer)", saved_profile.get("desired_salary", ""))
+        extras_default = json.dumps(saved_profile.get("additional_answers", {}), ensure_ascii=False, indent=2)
+        extras_text = st.text_area(
+            "Optional exact-label answers (JSON object)",
+            value=extras_default,
+            help='Example: {"Are you willing to relocate?": "Yes"}. Unknown questions are never guessed.',
+        )
+        save_profile = st.form_submit_button("Save verified profile")
+    if save_profile:
+        try:
+            extras = json.loads(extras_text or "{}")
+            if not isinstance(extras, dict):
+                raise ValueError("Additional answers must be a JSON object.")
+            profile_payload = {
+                "full_name": full_name, "email": email, "phone": phone, "location": location_value,
+                "linkedin_url": linkedin_url, "github_url": github_url,
+                "current_company": current_company, "current_title": current_title,
+                "years_experience": years_experience, "notice_period": notice_period,
+                "work_authorization": work_authorization, "requires_sponsorship": requires_sponsorship,
+                "desired_salary": desired_salary, "additional_answers": extras,
+            }
+            response = requests.put(api + "/applications/profile", json=profile_payload, timeout=25)
+            response.raise_for_status()
+            st.success("Verified profile saved locally.")
+            st.rerun()
+        except (ValueError, requests.RequestException) as exc:
+            st.error(f"Could not save application profile: {exc}")
+
+    st.divider()
     st.subheader("Batch application approval")
     st.caption(
         "Select prepared applications and approve the exact job + resume version together. "
@@ -340,6 +391,21 @@ with apply_tab:
     )
     queue_params = {} if queue_filter == "all" else {"status": queue_filter}
     automation_items = get("/applications/automation/queue", queue_params) or []
+    approved_waiting = get("/applications/automation/queue", {"status": "approved"}) or []
+    if approved_waiting and st.button(
+        f"Run approved applications in visible browser ({len(approved_waiting)} queued)",
+        type="primary",
+        help="Opens Chromium, fills only verified fields, and pauses for CAPTCHA/authentication or unknown required fields.",
+    ):
+        with st.spinner("Running approved applications. A visible Chromium window may open; solve any legitimate verification prompt there."):
+            run_result = post("/applications/automation/run-approved", params={"limit": min(25, len(approved_waiting))}, timeout=900)
+        if run_result:
+            st.success(
+                f"Processed {run_result.get('processed', 0)} application(s); "
+                f"{run_result.get('submitted', 0)} confirmed submitted."
+            )
+            st.json(run_result)
+            st.rerun()
     if not automation_items:
         st.info("The application automation queue is empty for this status.")
     for queued in automation_items:

@@ -10,7 +10,7 @@ from app.config import settings
 from app.db import init_db, log_event, metrics_snapshot, connection
 from app.models import (ManualJobRequest, ApprovalDecision, ApplicationStatus, ResumeSubmissionRecord, JobSearchPreferences, JobFeedback, BatchApplicationApproval, ApplicationProfile)
 from app.services.jobs import ingest_jobs, list_jobs, queue_approval, list_approvals, decide_approval, update_application
-from app.services.application_automation import (ApplicationAutomationError, approve_application_batch, list_automation_queue, mark_intervention, record_verified_submission)
+from app.services.application_automation import (ApplicationAutomationError, approve_application_batch, list_automation_queue, mark_intervention, record_verified_submission, retry_application)
 from app.services.application_profile import read_application_profile, save_application_profile
 from app.services.browser_automation import BrowserAutomationError, run_approved_applications
 from app.agent import run_discovery
@@ -246,6 +246,16 @@ def run_approved_application_batch(limit: int = Query(default=5, ge=1, le=25)):
 def application_automation_intervention(job_id: str, checkpoint: str = Query(...)):
     try:
         result = mark_intervention(job_id, checkpoint)
+        result["json_exports"] = _refresh_exports()
+        return result
+    except ApplicationAutomationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/applications/automation/{job_id}/retry")
+def retry_application_automation(job_id: str):
+    try:
+        result = retry_application(job_id)
         result["json_exports"] = _refresh_exports()
         return result
     except ApplicationAutomationError as exc:

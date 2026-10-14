@@ -41,3 +41,12 @@ class JobSearchPreferences(BaseModel):
 class JobFeedback(BaseModel):
     feedback: Literal["interested", "not_interested", "irrelevant", "applied"]
     reason: str = Field(default="", max_length=1000)
+
+
+class BatchApplicationItem(BaseModel):
+    job_id: str = Field(min_length=1, max_length=100)
+    version_id: str = Field(min_length=1, max_length=100)
+
+
+class BatchApplicationApproval(BaseModel):
+    applications: list[BatchApplicationItem] = Field(min_length=1, max_length=50)

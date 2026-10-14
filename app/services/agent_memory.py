@@ -100,6 +100,19 @@ def record_feedback(job_id: str, feedback: str, reason: str = "") -> dict[str, A
     return {"job_id": job_id, "feedback": feedback, "reason": reason}
 
 
+def clear_feedback(job_id: str) -> dict[str, Any]:
+    """Remove a job's feedback so an accidental rating can be undone."""
+    with connection() as db:
+        job = db.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not job:
+            raise LookupError("Job not found.")
+        cursor = db.execute("DELETE FROM job_feedback WHERE job_id=?", (job_id,))
+        cleared = cursor.rowcount > 0
+    if cleared:
+        log_event("job_feedback_cleared", {"job_id": job_id})
+    return {"job_id": job_id, "cleared": cleared}
+
+
 def list_feedback(limit: int = 50) -> list[dict[str, Any]]:
     with connection() as db:
         rows = db.execute(

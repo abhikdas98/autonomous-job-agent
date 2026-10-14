@@ -159,8 +159,8 @@ last_result = st.session_state.get("last_agent_run_result")
 if last_result:
     display_run(last_result)
 
-jobs_tab, approvals_tab, resumes_tab, monitoring_tab = st.tabs(
-    ["Ranked jobs", "Approval queue", "Resume drafts", "Monitoring & JSON"]
+jobs_tab, approvals_tab, resumes_tab, monitoring_tab, memory_tab = st.tabs(
+    ["Ranked jobs", "Approval queue", "Resume drafts", "Monitoring & JSON", "Search memory"]
 )
 
 with jobs_tab:
@@ -175,6 +175,25 @@ with jobs_tab:
             st.write(job.get("score_reasons", []))
             st.write(job.get("description", ""))
             st.markdown(f"[Open job posting]({job['url']})")
+            feedback_reason = st.text_input(
+                "Feedback note (optional)", key="feedback_reason_" + job["id"],
+                placeholder="e.g. too senior, weak RAG match, good agentic role",
+            )
+            feedback_cols = st.columns(3)
+            for col, feedback_value, feedback_label in (
+                (feedback_cols[0], "interested", "Interested"),
+                (feedback_cols[1], "not_interested", "Not interested"),
+                (feedback_cols[2], "irrelevant", "Irrelevant"),
+            ):
+                if col.button(feedback_label, key=f"feedback_{feedback_value}_{job['id']}"):
+                    saved_feedback = post(
+                        f"/jobs/{job['id']}/feedback",
+                        body={"feedback": feedback_value, "reason": feedback_reason},
+                        timeout=20,
+                    )
+                    if saved_feedback:
+                        st.success("Feedback saved to local memory.")
+                        st.rerun()
             if st.button("Queue job for review", key="queue_" + job["id"]):
                 result = post("/approvals/" + job["id"])
                 if result:
@@ -360,3 +379,67 @@ with monitoring_tab:
                 st.json(event.get("details", {}))
     else:
         st.info("No events recorded yet.")
+
+
+with memory_tab:
+    st.subheader("Persistent job-search preferences")
+    st.caption("Saved locally in SQLite. These settings are stored for future workflow improvements; they do not trigger model training or get sent to an LLM automatically.")
+    preferences = get("/memory/preferences") or {}
+    with st.form("job_search_memory_form"):
+        roles_text = st.text_area(
+            "Preferred roles (one per line)",
+            "\\n".join(preferences.get("preferred_roles", [])),
+        )
+        skills_text = st.text_area(
+            "Preferred skills (one per line)",
+            "\\n".join(preferences.get("preferred_skills", [])),
+        )
+        locations_text = st.text_area(
+            "Preferred locations (one per line)",
+            "\\n".join(preferences.get("preferred_locations", [])),
+        )
+        excluded_text = st.text_area(
+            "Terms to avoid (one per line)",
+            "\\n".join(preferences.get("excluded_terms", [])),
+        )
+        notes_text = st.text_area("Additional preferences", preferences.get("notes", ""))
+        save_memory = st.form_submit_button("Save preferences", type="primary")
+    if save_memory:
+        payload = {
+            "preferred_roles": [x.strip() for x in roles_text.splitlines() if x.strip()],
+            "preferred_skills": [x.strip() for x in skills_text.splitlines() if x.strip()],
+            "preferred_locations": [x.strip() for x in locations_text.splitlines() if x.strip()],
+            "excluded_terms": [x.strip() for x in excluded_text.splitlines() if x.strip()],
+            "notes": notes_text,
+        }
+        saved = None
+        try:
+            response = requests.put(api + "/memory/preferences", json=payload, timeout=25)
+            response.raise_for_status()
+            saved = response.json()
+        except requests.RequestException as exc:
+            st.error(f"Could not save preferences: {exc}")
+        if saved:
+            st.success("Preferences saved locally.")
+            st.rerun()
+
+    st.divider()
+    st.subheader("Feedback memory")
+    summary = get("/memory/summary") or {}
+    counts = summary.get("feedback_counts", {})
+    a, b, c, d = st.columns(4)
+    a.metric("Feedback records", summary.get("feedback_total", 0))
+    b.metric("Interested", counts.get("interested", 0))
+    c.metric("Not interested", counts.get("not_interested", 0))
+    d.metric("Irrelevant", counts.get("irrelevant", 0))
+    st.caption(summary.get("note", ""))
+    feedback_rows = get("/memory/feedback", {"limit": 100}) or []
+    if feedback_rows:
+        for item in feedback_rows:
+            with st.expander(f"{item.get('feedback', '')} · {item.get('title', '')} — {item.get('company', '')}"):
+                st.write("Reason:", item.get("reason") or "No reason provided")
+                st.write("Score:", item.get("score"))
+                if item.get("url"):
+                    st.markdown(f"[Open job posting]({item['url']})")
+    else:
+        st.info("Rate jobs in the Ranked jobs tab to build a local feedback history.")

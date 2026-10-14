@@ -213,3 +213,30 @@ def record_verified_submission(job_id: str, confirmation: str) -> dict[str, str]
         "job_id": job_id, "version_id": row["version_id"],
     })
     return {"job_id": job_id, "version_id": row["version_id"], "status": "submitted"}
+
+
+def retry_application(job_id: str) -> dict[str, str]:
+    """Requeue an intervention-paused application after the user resolves its cause."""
+    with connection() as db:
+        row = db.execute(
+            """SELECT q.status, a.status AS approval_status, rv.status AS resume_status
+               FROM application_automation_queue q
+               JOIN approvals a ON a.job_id=q.job_id
+               JOIN resume_versions rv ON rv.version_id=q.version_id
+               WHERE q.job_id=?""",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            raise ApplicationAutomationError("Application is not in the automation queue.")
+        if row["status"] != "needs_intervention":
+            raise ApplicationAutomationError("Only applications needing intervention can be retried.")
+        if row["approval_status"] != "approved" or row["resume_status"] != "approved":
+            raise ApplicationAutomationError("The job and exact resume version must remain approved.")
+        db.execute(
+            """UPDATE application_automation_queue SET status='approved',
+               checkpoint='ready_for_browser_automation', result_json='{}',
+               updated_at=CURRENT_TIMESTAMP WHERE job_id=?""",
+            (job_id,),
+        )
+    log_event("application_automation_requeued", {"job_id": job_id})
+    return {"job_id": job_id, "status": "approved"}

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import time
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,9 @@ from app.services.application_profile import read_application_profile
 
 class BrowserAutomationError(RuntimeError):
     pass
+
+
+_BROWSER_RUN_LOCK = threading.Lock()
 
 
 ALIASES: dict[str, tuple[str, ...]] = {
@@ -276,7 +280,7 @@ def _run_one(page: Any, item: dict[str, Any], profile: dict[str, Any]) -> dict[s
     })
 
 
-def run_approved_applications(limit: int = 5) -> dict[str, Any]:
+def _run_approved_applications_locked(limit: int = 5) -> dict[str, Any]:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -337,3 +341,14 @@ def run_approved_applications(limit: int = 5) -> dict[str, Any]:
         "needs_intervention": summary["needs_intervention"],
     })
     return summary
+
+
+
+def run_approved_applications(limit: int = 5) -> dict[str, Any]:
+    """Prevent two API requests from using the same persistent browser profile."""
+    if not _BROWSER_RUN_LOCK.acquire(blocking=False):
+        raise BrowserAutomationError("An application browser batch is already running.")
+    try:
+        return _run_approved_applications_locked(limit=limit)
+    finally:
+        _BROWSER_RUN_LOCK.release()

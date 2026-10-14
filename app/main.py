@@ -8,12 +8,13 @@ from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.db import init_db, log_event, metrics_snapshot, connection
-from app.models import ManualJobRequest, ApprovalDecision, ApplicationStatus, ResumeSubmissionRecord
+from app.models import (ManualJobRequest, ApprovalDecision, ApplicationStatus, ResumeSubmissionRecord, JobSearchPreferences, JobFeedback)
 from app.services.jobs import ingest_jobs, list_jobs, queue_approval, list_approvals, decide_approval, update_application
 from app.agent import run_discovery
 from app.notifications.email_report import send_report
 from app.services.llm_ranking import rank_shortlist, queue_snapshot
 from app.services.llm_worker import RankingWorker
+from app.services.agent_memory import get_preferences, save_preferences, record_feedback, clear_feedback, list_feedback, memory_summary
 from app.resumes import (
     ResumeError, upload_master, master_status, tailor_for_job, list_versions,
     get_version, approve_version, record_version_submission, resolve_artifact,
@@ -304,6 +305,47 @@ def record_resume_submission(version_id: str, body: ResumeSubmissionRecord):
     except ResumeError as exc:
         status = 404 if "not found" in str(exc).lower() else 409
         raise HTTPException(status_code=status, detail=str(exc))
+
+
+@app.get("/memory/preferences")
+def read_job_search_preferences():
+    return get_preferences()
+
+
+@app.put("/memory/preferences")
+def update_job_search_preferences(body: JobSearchPreferences):
+    try:
+        return save_preferences(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.delete("/jobs/{job_id}/feedback")
+def delete_job_feedback(job_id: str):
+    try:
+        return clear_feedback(job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/memory/summary")
+def get_agent_memory_summary():
+    return memory_summary()
+
+
+@app.get("/memory/feedback")
+def get_job_feedback(limit: int = Query(default=50, ge=1, le=200)):
+    return list_feedback(limit)
+
+
+@app.post("/jobs/{job_id}/feedback")
+def set_job_feedback(job_id: str, body: JobFeedback):
+    try:
+        return record_feedback(job_id, body.feedback, body.reason)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.get("/exports/status")

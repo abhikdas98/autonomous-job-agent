@@ -28,3 +28,16 @@ class ManualJobRequest(BaseModel):
 
 class ResumeSubmissionRecord(BaseModel):
     notes: str = Field(default="", max_length=2000)
+
+
+class JobSearchPreferences(BaseModel):
+    preferred_roles: list[str] = Field(default_factory=list, max_length=30)
+    preferred_skills: list[str] = Field(default_factory=list, max_length=30)
+    preferred_locations: list[str] = Field(default_factory=list, max_length=30)
+    excluded_terms: list[str] = Field(default_factory=list, max_length=30)
+    notes: str = Field(default="", max_length=1000)
+
+
+class JobFeedback(BaseModel):
+    feedback: Literal["interested", "not_interested", "irrelevant", "applied"]
+    reason: str = Field(default="", max_length=1000)

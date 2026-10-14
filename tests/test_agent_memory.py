@@ -85,3 +85,24 @@ def test_init_db_marks_only_stale_runs_interrupted(local_db):
         }
     assert statuses["stale"] == "interrupted"
     assert statuses["fresh"] == "running"
+
+
+def test_saved_preferences_adjust_deterministic_ranking(local_db):
+    from app.services.ranking import rank_job
+
+    baseline, _ = rank_job(
+        "Support Engineer", "Example", "Chennai", "Maintain internal tools.",
+    )
+    preferences = save_preferences({
+        "preferred_roles": ["Support Engineer"],
+        "preferred_skills": ["internal tools"],
+        "preferred_locations": ["Chennai"],
+        "excluded_terms": [],
+        "notes": "",
+    })
+    personalized, reasons = rank_job(
+        "Support Engineer", "Example", "Chennai", "Maintain internal tools.",
+        preferences=preferences,
+    )
+    assert personalized > baseline
+    assert any("saved preferred role" in reason for reason in reasons)

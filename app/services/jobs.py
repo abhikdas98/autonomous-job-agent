@@ -4,10 +4,12 @@ import json
 from app.db import connection, log_event
 from app.services.identity import fingerprint
 from app.services.ranking import rank_job
+from app.services.agent_memory import get_preferences
 
 
 def ingest_jobs(items):
     inserted = duplicates = 0
+    preferences = get_preferences()
     for item in items:
         title = str(item.get("title") or "Untitled").strip()
         company = str(item.get("company") or "Unknown").strip()
@@ -19,7 +21,7 @@ def ingest_jobs(items):
         source = str(item.get("source") or "unknown")
         posted = str(item.get("posted_at") or "")
         fp = fingerprint(title, company, location, url)
-        score, reasons = rank_job(title, company, location, desc)
+        score, reasons = rank_job(title, company, location, desc, preferences=preferences)
         job_id = hashlib.sha256(fp.encode()).hexdigest()[:24]
         with connection() as c:
             old = c.execute("SELECT id, score, score_reasons FROM jobs WHERE fingerprint=?", (fp,)).fetchone()

@@ -181,8 +181,8 @@ last_result = st.session_state.get("last_agent_run_result")
 if last_result:
     display_run(last_result)
 
-jobs_tab, approvals_tab, resumes_tab, monitoring_tab, memory_tab = st.tabs(
-    ["Ranked jobs", "Approval queue", "Resume drafts", "Monitoring & JSON", "Search memory"]
+jobs_tab, approvals_tab, apply_tab, resumes_tab, monitoring_tab, memory_tab = st.tabs(
+    ["Ranked jobs", "Approval queue", "Batch applications", "Resume drafts", "Monitoring & JSON", "Search memory"]
 )
 
 with jobs_tab:
@@ -284,6 +284,73 @@ with approvals_tab:
                 if rejected:
                     st.success("Job rejected.")
                     st.rerun()
+
+with apply_tab:
+    st.subheader("Batch application approval")
+    st.caption(
+        "Select prepared applications and approve the exact job + resume version together. "
+        "This queues them for automation; it does not claim an employer submission has occurred."
+    )
+    pending_jobs = get("/approvals", {"status": "pending"}) or []
+    batch_items = []
+    if not pending_jobs:
+        st.info("No pending application packages. Run the workflow and upload your master resume to prepare drafts.")
+    for item in pending_jobs:
+        job_id = item["job_id"]
+        history = get(f"/resumes/{job_id}") or {"versions": []}
+        eligible = [
+            version for version in history.get("versions", [])
+            if version.get("status") in {"needs_review", "approved"}
+        ]
+        if not eligible:
+            continue
+        eligible.sort(key=lambda version: version.get("version_number", 0), reverse=True)
+        options = {version["version_id"]: version for version in eligible}
+        with st.expander(f"{item['score']:.0f}/100 · {item['title']} — {item['company']}"):
+            st.markdown(f"[Open job posting]({item['url']})")
+            st.caption(item.get("location", "Location not stated"))
+            chosen_id = st.selectbox(
+                "Exact resume version",
+                options=list(options),
+                format_func=lambda version_id: (
+                    f"v{options[version_id]['version_number']:03d} · {options[version_id]['status']}"
+                ),
+                key=f"batch_version_{job_id}",
+            )
+            chosen = options[chosen_id]
+            st.write("PDF:", chosen.get("pdf_path", ""))
+            if chosen.get("unsupported_requirements"):
+                st.warning("Requirements not evidenced in the master resume: " + "; ".join(chosen["unsupported_requirements"]))
+            if st.checkbox("Include this application in the batch", key=f"batch_select_{job_id}"):
+                batch_items.append({"job_id": job_id, "version_id": chosen_id})
+    st.write(f"Selected applications: **{len(batch_items)}**")
+    if st.button("Approve selected applications and queue automation", type="primary", disabled=not batch_items):
+        result = post("/applications/automation/queue", body={"applications": batch_items}, timeout=60)
+        if result:
+            st.success(f"Approved and queued {result.get('queued_count', 0)} application(s).")
+            st.json(result.get("applications", []))
+            st.rerun()
+
+    st.divider()
+    st.subheader("Application automation status")
+    queue_filter = st.selectbox(
+        "Show status",
+        ["all", "approved", "in_progress", "needs_intervention", "submitted", "failed"],
+        key="automation_queue_filter",
+    )
+    queue_params = {} if queue_filter == "all" else {"status": queue_filter}
+    automation_items = get("/applications/automation/queue", queue_params) or []
+    if not automation_items:
+        st.info("The application automation queue is empty for this status.")
+    for queued in automation_items:
+        with st.expander(f"{queued['status']} · {queued['title']} — {queued['company']}"):
+            st.markdown(f"[Employer application]({queued['url']})")
+            st.write("Approved resume version:", queued["version_id"])
+            st.write("Checkpoint:", queued.get("checkpoint", ""))
+            if queued.get("result"):
+                st.json(queued["result"])
+            if queued["status"] == "needs_intervention":
+                st.warning("This application needs a checkpoint resolved before it can continue.")
 
 with resumes_tab:
     st.subheader("Master resume")

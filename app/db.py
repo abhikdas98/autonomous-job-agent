@@ -104,10 +104,40 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_llm_times ON llm_request_times(created_at);
         CREATE INDEX IF NOT EXISTS idx_resume_versions_job ON resume_versions(job_id, version_number DESC);
         CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs(started_at DESC);
+        CREATE TABLE IF NOT EXISTS agent_memory (
+          key TEXT PRIMARY KEY,
+          value_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS job_feedback (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+          feedback TEXT NOT NULL CHECK (feedback IN ('interested','not_interested','irrelevant','applied')),
+          reason TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_job_feedback_created ON job_feedback(updated_at DESC);
         """)
         columns = {row["name"] for row in c.execute("PRAGMA table_info(resume_versions)").fetchall()}
         if "submission_notes" not in columns:
             c.execute("ALTER TABLE resume_versions ADD COLUMN submission_notes TEXT NOT NULL DEFAULT ''")
+
+        # A process may have been terminated while a workflow was running.
+        # Only recover runs older than 30 minutes to avoid touching a live run
+        # when two local processes briefly share the same database.
+        stale = c.execute(
+            """UPDATE agent_runs
+               SET status='interrupted', completed_at=CURRENT_TIMESTAMP,
+                   error=CASE WHEN error='' THEN 'Process stopped before workflow completion.' ELSE error END
+               WHERE status='running'
+                 AND started_at < datetime('now', '-30 minutes')"""
+        ).rowcount
+        if stale:
+            c.execute(
+                "INSERT INTO events(level,event,details) VALUES(?,?,?)",
+                ("WARNING", "stale_agent_runs_recovered", json.dumps({"count": stale})),
+            )
 
 
 def log_event(event, details=None, level="INFO"):

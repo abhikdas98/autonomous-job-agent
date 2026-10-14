@@ -6,12 +6,16 @@ from pathlib import Path
 from app.config import settings
 
 
+STALE_RUN_MINUTES = 30
+
+
 @contextmanager
 def connection():
     path = Path(settings.database_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=30000")
     try:
         yield conn
@@ -57,6 +61,7 @@ def init_db():
           location TEXT NOT NULL,
           status TEXT NOT NULL DEFAULT 'running',
           started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          heartbeat_at TEXT,
           completed_at TEXT,
           summary_json TEXT NOT NULL DEFAULT '{}',
           error TEXT NOT NULL DEFAULT ''
@@ -123,21 +128,35 @@ def init_db():
         if "submission_notes" not in columns:
             c.execute("ALTER TABLE resume_versions ADD COLUMN submission_notes TEXT NOT NULL DEFAULT ''")
 
-        # A process may have been terminated while a workflow was running.
-        # Only recover runs older than 30 minutes to avoid touching a live run
-        # when two local processes briefly share the same database.
+        run_columns = {row["name"] for row in c.execute("PRAGMA table_info(agent_runs)").fetchall()}
+        if "heartbeat_at" not in run_columns:
+            c.execute("ALTER TABLE agent_runs ADD COLUMN heartbeat_at TEXT")
+
+        # Recover only runs whose last heartbeat is stale. Older databases have
+        # no heartbeat value, so their start time is used as a safe fallback.
         stale = c.execute(
             """UPDATE agent_runs
                SET status='interrupted', completed_at=CURRENT_TIMESTAMP,
                    error=CASE WHEN error='' THEN 'Process stopped before workflow completion.' ELSE error END
                WHERE status='running'
-                 AND started_at < datetime('now', '-30 minutes')"""
+                 AND COALESCE(heartbeat_at, started_at) < datetime('now', ?)""",
+            (f"-{STALE_RUN_MINUTES} minutes",),
         ).rowcount
         if stale:
             c.execute(
                 "INSERT INTO events(level,event,details) VALUES(?,?,?)",
                 ("WARNING", "stale_agent_runs_recovered", json.dumps({"count": stale})),
             )
+
+
+def heartbeat_agent_run(run_id: str) -> bool:
+    """Refresh a running workflow's heartbeat; return False if it is no longer active."""
+    with connection() as c:
+        cursor = c.execute(
+            "UPDATE agent_runs SET heartbeat_at=CURRENT_TIMESTAMP WHERE run_id=? AND status='running'",
+            (run_id,),
+        )
+    return cursor.rowcount == 1
 
 
 def log_event(event, details=None, level="INFO"):

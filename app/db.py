@@ -103,6 +103,19 @@ def init_db():
           submission_notes TEXT NOT NULL DEFAULT '',
           UNIQUE(job_id, version_number)
         );
+        CREATE TABLE IF NOT EXISTS application_automation_queue (
+          job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+          version_id TEXT NOT NULL UNIQUE REFERENCES resume_versions(version_id),
+          status TEXT NOT NULL DEFAULT 'approved'
+            CHECK (status IN ('approved','in_progress','needs_intervention','submitted','failed')),
+          checkpoint TEXT NOT NULL DEFAULT '',
+          result_json TEXT NOT NULL DEFAULT '{}',
+          approved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          submitted_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_application_automation_status
+          ON application_automation_queue(status, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_llm_queue_due ON llm_ranking_queue(status, available_at);
         CREATE INDEX IF NOT EXISTS idx_jobs_score ON jobs(score DESC);
         CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);

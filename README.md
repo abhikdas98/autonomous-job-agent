@@ -26,13 +26,36 @@ The LangGraph workflow runs these steps in order:
 
 The default LLM call budget is intentionally conservative: one LLM ranking call plus up to two resume drafts per run, within the existing local limiter of three new requests/minute. Tune `WORKFLOW_LLM_RANK_TOP_N`, `AUTO_TAILOR_TOP_N`, and `LLM_MAX_REQUESTS_PER_MINUTE` only to match your provider's actual quota. Provider-side rate limits still apply. If you already have a version for a job, the agent preserves it and doesn't create a duplicate automatically.
 
-## Application submission boundary
+## Batch approval and browser application automation
 
-The agent automates discovery, filtering, ranking, resume preparation, approval queuing, and tracking. It does **not** submit employer forms automatically. Arbitrary employer sites require different forms, authentication, consent, and application-specific answers; the current project has no verified official application API integration for all sites.
+The agent can now queue a **batch of exact job/resume pairs** for application automation. In the dashboard's **Batch applications** tab, review the summaries and selected resume versions, then approve the selected applications together. This single batch action approves the selected job and that exact resume version and places each pair in the automation queue.
 
-Review the job description and exact generated PDF/DOCX, approve the job and resume version separately, then submit on the employer's official site. Only after submission click **Record manual submission**. This records the application and exact resume version locally; it doesn't submit externally or bypass CAPTCHA/access controls.
+The browser adapter is an optional, conservative first implementation. It uses a visible Chromium session to open each approved job, fill recognizable fields from your verified local profile, upload the approved PDF resume when the upload field is identifiable, and click a clearly labeled submission control only when required fields have been handled. It checks for a confirmation signal before marking an application submitted. Portal markup varies, so this is not a promise of universal compatibility; unsupported or ambiguous forms pause for intervention instead of guessing.
 
-The generator selects and reorders only verbatim passages from your master resume. Its audit report lists job requirements not evidenced in the source resume. This cannot prove claims already in the source resume are true, so always review each draft.
+### Enable browser automation on Windows
+
+Install the optional browser dependencies in your existing virtual environment:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-browser.txt
+.\.venv\Scripts\python.exe -m playwright install chromium
+```
+
+Then restart the FastAPI API and Streamlit dashboard. In **Batch applications**:
+
+1. Fill and save your verified application profile. It is stored locally beside `data/agent.db` in `application_profile.json`, not committed to Git, and not automatically sent to the LLM.
+2. Review the pending applications and select the exact resume version for each.
+3. Use **Approve selected applications and queue automation** to authorize the selected batch.
+4. Click **Run approved applications in visible browser**. Chromium opens visibly and uses a persistent local browser profile for supported login sessions.
+5. If CAPTCHA or authentication appears, complete the legitimate challenge in the opened browser. The agent waits up to five minutes, then records an intervention if the challenge remains. It never bypasses CAPTCHA or invents answers.
+6. If a required question is unknown, a consent checkbox needs your decision, an upload fails, or the portal is unsupported, the application pauses. Fix the profile or checkpoint and use **Retry this application**.
+7. A job is marked submitted only when a recognizable confirmation signal is observed. If the result is ambiguous, verify the employer portal before retrying to avoid duplicate applications.
+
+The browser session directory contains login cookies and other session state. Protect the local machine and never commit the browser profile, application profile, resumes, or application history. Use this automation only on portals where your use of browser automation is permitted. It does not bypass access controls or CAPTCHA.
+
+API endpoints for this workflow include `GET/PUT /applications/profile`, `POST /applications/automation/queue`, `GET /applications/automation/queue`, `POST /applications/automation/run-approved`, and the intervention/retry/submission tracking endpoints.
+
+The generator selects and reorders only verbatim passages from your master resume. Its audit report lists job requirements not evidenced in the source resume. This cannot prove claims already in the source resume are true, so review the selected resume version before batch approval.
 
 ## Lightweight persistent job-search memory
 

@@ -8,8 +8,11 @@ from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.db import init_db, log_event, metrics_snapshot, connection
-from app.models import (ManualJobRequest, ApprovalDecision, ApplicationStatus, ResumeSubmissionRecord, JobSearchPreferences, JobFeedback)
+from app.models import (ManualJobRequest, ApprovalDecision, ApplicationStatus, ResumeSubmissionRecord, JobSearchPreferences, JobFeedback, BatchApplicationApproval, ApplicationProfile)
 from app.services.jobs import ingest_jobs, list_jobs, queue_approval, list_approvals, decide_approval, update_application
+from app.services.application_automation import (ApplicationAutomationError, approve_application_batch, list_automation_queue, mark_intervention, record_verified_submission, retry_application)
+from app.services.application_profile import read_application_profile, save_application_profile
+from app.services.browser_automation import BrowserAutomationError, run_approved_applications
 from app.agent import run_discovery
 from app.notifications.email_report import send_report
 from app.services.llm_ranking import rank_shortlist, queue_snapshot
@@ -186,6 +189,88 @@ def approval_decision(job_id: str, body: ApprovalDecision):
         raise HTTPException(status_code=404, detail="Job not found")
     exports = _refresh_exports()
     return {"job_id": job_id, "decision": body.decision, "json_exports": exports}
+
+
+@app.post("/applications/automation/queue")
+def approve_application_automation_batch(body: BatchApplicationApproval):
+    """Authorize a batch of exact job/resume pairs for subsequent automation."""
+    try:
+        result = approve_application_batch(
+            [item.model_dump() for item in body.applications]
+        )
+        result["json_exports"] = _refresh_exports()
+        return result
+    except ApplicationAutomationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/applications/automation/queue")
+def application_automation_queue(
+    status: str | None = Query(
+        default=None,
+        pattern="^(approved|in_progress|needs_intervention|submitted|failed)$",
+    ),
+    limit: int = Query(default=100, ge=1, le=200),
+):
+    return list_automation_queue(status=status, limit=limit)
+
+
+@app.get("/applications/profile")
+def get_application_profile():
+    try:
+        return read_application_profile()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.put("/applications/profile")
+def put_application_profile(body: ApplicationProfile):
+    try:
+        return save_application_profile(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/applications/automation/run-approved")
+def run_approved_application_batch(limit: int = Query(default=5, ge=1, le=25)):
+    """Run the explicitly approved batch in a visible browser session."""
+    try:
+        result = run_approved_applications(limit=limit)
+        result["json_exports"] = _refresh_exports()
+        return result
+    except BrowserAutomationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/applications/automation/{job_id}/intervention")
+def application_automation_intervention(job_id: str, checkpoint: str = Query(...)):
+    try:
+        result = mark_intervention(job_id, checkpoint)
+        result["json_exports"] = _refresh_exports()
+        return result
+    except ApplicationAutomationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/applications/automation/{job_id}/retry")
+def retry_application_automation(job_id: str):
+    try:
+        result = retry_application(job_id)
+        result["json_exports"] = _refresh_exports()
+        return result
+    except ApplicationAutomationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/applications/automation/{job_id}/record-submission")
+def application_automation_record_submission(job_id: str, confirmation: str = Query(..., min_length=8, max_length=500)):
+    """Record browser-observed confirmation; this endpoint does not submit a form."""
+    try:
+        result = record_verified_submission(job_id, confirmation)
+        result["json_exports"] = _refresh_exports()
+        return result
+    except ApplicationAutomationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.post("/applications/{job_id}/status")

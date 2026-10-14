@@ -1,3 +1,4 @@
+import json
 import os
 import requests
 import streamlit as st
@@ -181,8 +182,8 @@ last_result = st.session_state.get("last_agent_run_result")
 if last_result:
     display_run(last_result)
 
-jobs_tab, approvals_tab, resumes_tab, monitoring_tab, memory_tab = st.tabs(
-    ["Ranked jobs", "Approval queue", "Resume drafts", "Monitoring & JSON", "Search memory"]
+jobs_tab, approvals_tab, apply_tab, resumes_tab, monitoring_tab, memory_tab = st.tabs(
+    ["Ranked jobs", "Approval queue", "Batch applications", "Resume drafts", "Monitoring & JSON", "Search memory"]
 )
 
 with jobs_tab:
@@ -284,6 +285,144 @@ with approvals_tab:
                 if rejected:
                     st.success("Job rejected.")
                     st.rerun()
+
+with apply_tab:
+    st.subheader("Verified application profile")
+    st.caption(
+        "Saved locally beside the SQLite database. These values are used for browser form filling; "
+        "they are not automatically sent to the LLM."
+    )
+    profile_result = get("/applications/profile") or {"configured": False, "profile": {}}
+    saved_profile = profile_result.get("profile", {})
+    with st.form("application_profile_form"):
+        p1, p2 = st.columns(2)
+        full_name = p1.text_input("Full name", saved_profile.get("full_name", ""))
+        email = p2.text_input("Email", saved_profile.get("email", ""))
+        phone = p1.text_input("Phone", saved_profile.get("phone", ""))
+        location_value = p2.text_input("Location / city", saved_profile.get("location", ""))
+        linkedin_url = p1.text_input("LinkedIn URL", saved_profile.get("linkedin_url", ""))
+        github_url = p2.text_input("GitHub URL", saved_profile.get("github_url", ""))
+        current_company = p1.text_input("Current / most recent company", saved_profile.get("current_company", ""))
+        current_title = p2.text_input("Current / most recent title", saved_profile.get("current_title", ""))
+        years_experience = p1.text_input("Years of experience", saved_profile.get("years_experience", ""))
+        notice_period = p2.text_input("Notice period", saved_profile.get("notice_period", ""))
+        work_authorization = p1.text_input("Work authorization (exact answer)", saved_profile.get("work_authorization", ""))
+        requires_sponsorship = p2.text_input("Requires sponsorship (exact answer)", saved_profile.get("requires_sponsorship", ""))
+        desired_salary = p1.text_input("Desired salary / CTC (exact answer)", saved_profile.get("desired_salary", ""))
+        extras_default = json.dumps(saved_profile.get("additional_answers", {}), ensure_ascii=False, indent=2)
+        extras_text = st.text_area(
+            "Optional exact-label answers (JSON object)",
+            value=extras_default,
+            help='Example: {"Are you willing to relocate?": "Yes"}. Unknown questions are never guessed.',
+        )
+        save_profile = st.form_submit_button("Save verified profile")
+    if save_profile:
+        try:
+            extras = json.loads(extras_text or "{}")
+            if not isinstance(extras, dict):
+                raise ValueError("Additional answers must be a JSON object.")
+            profile_payload = {
+                "full_name": full_name, "email": email, "phone": phone, "location": location_value,
+                "linkedin_url": linkedin_url, "github_url": github_url,
+                "current_company": current_company, "current_title": current_title,
+                "years_experience": years_experience, "notice_period": notice_period,
+                "work_authorization": work_authorization, "requires_sponsorship": requires_sponsorship,
+                "desired_salary": desired_salary, "additional_answers": extras,
+            }
+            response = requests.put(api + "/applications/profile", json=profile_payload, timeout=25)
+            response.raise_for_status()
+            st.success("Verified profile saved locally.")
+            st.rerun()
+        except (ValueError, requests.RequestException) as exc:
+            st.error(f"Could not save application profile: {exc}")
+
+    st.divider()
+    st.subheader("Batch application approval")
+    st.caption(
+        "Select prepared applications and approve the exact job + resume version together. "
+        "This queues them for automation; it does not claim an employer submission has occurred."
+    )
+    pending_jobs = get("/approvals", {"status": "pending"}) or []
+    batch_items = []
+    if not pending_jobs:
+        st.info("No pending application packages. Run the workflow and upload your master resume to prepare drafts.")
+    for item in pending_jobs:
+        job_id = item["job_id"]
+        history = get(f"/resumes/{job_id}") or {"versions": []}
+        eligible = [
+            version for version in history.get("versions", [])
+            if version.get("status") in {"needs_review", "approved"}
+        ]
+        if not eligible:
+            continue
+        eligible.sort(key=lambda version: version.get("version_number", 0), reverse=True)
+        options = {version["version_id"]: version for version in eligible}
+        with st.expander(f"{item['score']:.0f}/100 · {item['title']} — {item['company']}"):
+            st.markdown(f"[Open job posting]({item['url']})")
+            st.caption(item.get("location", "Location not stated"))
+            chosen_id = st.selectbox(
+                "Exact resume version",
+                options=list(options),
+                format_func=lambda version_id: (
+                    f"v{options[version_id]['version_number']:03d} · {options[version_id]['status']}"
+                ),
+                key=f"batch_version_{job_id}",
+            )
+            chosen = options[chosen_id]
+            st.write("PDF:", chosen.get("pdf_path", ""))
+            if chosen.get("unsupported_requirements"):
+                st.warning("Requirements not evidenced in the master resume: " + "; ".join(chosen["unsupported_requirements"]))
+            if st.checkbox("Include this application in the batch", key=f"batch_select_{job_id}"):
+                batch_items.append({"job_id": job_id, "version_id": chosen_id})
+    st.write(f"Selected applications: **{len(batch_items)}**")
+    if st.button("Approve selected applications and queue automation", type="primary", disabled=not batch_items):
+        result = post("/applications/automation/queue", body={"applications": batch_items}, timeout=60)
+        if result:
+            st.success(f"Approved and queued {result.get('queued_count', 0)} application(s).")
+            st.json(result.get("applications", []))
+            st.rerun()
+
+    st.divider()
+    st.subheader("Application automation status")
+    queue_filter = st.selectbox(
+        "Show status",
+        ["all", "approved", "in_progress", "needs_intervention", "submitted", "failed"],
+        key="automation_queue_filter",
+    )
+    queue_params = {} if queue_filter == "all" else {"status": queue_filter}
+    automation_items = get("/applications/automation/queue", queue_params) or []
+    approved_waiting = get("/applications/automation/queue", {"status": "approved"}) or []
+    if approved_waiting and st.button(
+        f"Run approved applications in visible browser ({len(approved_waiting)} queued)",
+        type="primary",
+        help="Opens Chromium, fills only verified fields, and pauses for CAPTCHA/authentication or unknown required fields.",
+    ):
+        with st.spinner("Running approved applications. A visible Chromium window may open; solve any legitimate verification prompt there."):
+            run_result = post("/applications/automation/run-approved", params={"limit": min(25, len(approved_waiting))}, timeout=900)
+        if run_result:
+            st.success(
+                f"Processed {run_result.get('processed', 0)} application(s); "
+                f"{run_result.get('submitted', 0)} confirmed submitted."
+            )
+            st.json(run_result)
+            st.rerun()
+    if not automation_items:
+        st.info("The application automation queue is empty for this status.")
+    for queued in automation_items:
+        with st.expander(f"{queued['status']} · {queued['title']} — {queued['company']}"):
+            st.markdown(f"[Employer application]({queued['url']})")
+            st.write("Approved resume version:", queued["version_id"])
+            st.write("Checkpoint:", queued.get("checkpoint", ""))
+            if queued.get("result"):
+                st.json(queued["result"])
+            if queued["status"] == "needs_intervention":
+                st.warning("This application needs a checkpoint resolved before it can continue.")
+                st.caption("Resolve the issue in your profile or employer session first, then retry.")
+                if st.button("Retry this application", key=f"retry_application_{queued['job_id']}"):
+                    retried = post(f"/applications/automation/{queued['job_id']}/retry", timeout=30)
+                    if retried:
+                        st.success("Application returned to the approved queue.")
+                        st.rerun()
 
 with resumes_tab:
     st.subheader("Master resume")

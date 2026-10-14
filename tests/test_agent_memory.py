@@ -106,3 +106,26 @@ def test_saved_preferences_adjust_deterministic_ranking(local_db):
     )
     assert personalized > baseline
     assert any("saved preferred role" in reason for reason in reasons)
+
+def test_job_listing_exposes_feedback_and_approval_state(local_db):
+    from app.services.jobs import list_jobs, queue_approval
+
+    ingest_jobs([{
+        "title": "Agentic AI Engineer",
+        "company": "Example",
+        "location": "India",
+        "url": "https://example.com/jobs/agentic",
+        "description": "Build Python and RAG applications.",
+        "source": "manual",
+    }])
+    job = list_jobs()[0]
+    job_id = job["id"]
+
+    record_feedback(job_id, "interested", "Strong agentic AI match")
+    assert list_jobs()[0]["feedback"] == "interested"
+    assert list_jobs()[0]["feedback_reason"] == "Strong agentic AI match"
+
+    assert queue_approval(job_id) is True
+    queued = list_jobs()[0]
+    assert queued["approval_status"] == "pending"
+    assert queued["status"] == "awaiting_approval"

@@ -129,3 +129,25 @@ def test_job_listing_exposes_feedback_and_approval_state(local_db):
     queued = list_jobs()[0]
     assert queued["approval_status"] == "pending"
     assert queued["status"] == "awaiting_approval"
+
+def test_feedback_can_be_cleared_after_accidental_rating(local_db):
+    from app.services.agent_memory import clear_feedback
+
+    ingest_jobs([{
+        "title": "Generative AI Engineer",
+        "company": "Example",
+        "location": "India",
+        "url": "https://example.com/jobs/undo-feedback",
+        "description": "Build LLM applications.",
+        "source": "manual",
+    }])
+    with connection() as db:
+        job_id = db.execute("SELECT id FROM jobs").fetchone()["id"]
+
+    record_feedback(job_id, "interested", "Clicked by mistake")
+    result = clear_feedback(job_id)
+
+    assert result == {"job_id": job_id, "cleared": True}
+    assert list_feedback() == []
+    assert memory_summary()["feedback_total"] == 0
+    assert clear_feedback(job_id)["cleared"] is False

@@ -34,6 +34,18 @@ Review the job description and exact generated PDF/DOCX, approve the job and res
 
 The generator selects and reorders only verbatim passages from your master resume. Its audit report lists job requirements not evidenced in the source resume. This cannot prove claims already in the source resume are true, so always review each draft.
 
+## Lightweight persistent job-search memory
+
+The **Search memory** dashboard tab stores your preferred roles, skills, locations, terms to avoid, and optional notes in SQLite. These saved preferences apply small, explainable adjustments to deterministic job scores during discovery; the existing baseline scoring and LLM fallback remain in place. Use the Interested / Not interested / Irrelevant controls on each ranked job to keep one feedback record per job, including an optional reason. Feedback is currently stored for review and future tuning; it is not used to train a model.
+
+The database initialization also marks workflow runs older than 30 minutes as `interrupted` if they were still marked `running`. This is conservative recovery for a process that exited unexpectedly; recent runs are left alone to avoid interfering with a live workflow. SQLite remains local and no extra database, vector store, browser process, or local model is required.
+
+Memory API endpoints:
+
+- `GET /memory/preferences` and `PUT /memory/preferences` — read/save search preferences
+- `GET /memory/summary` and `GET /memory/feedback` — inspect saved memory
+- `POST /jobs/{job_id}/feedback` — save `interested`, `not_interested`, `irrelevant`, or `applied` feedback with an optional reason
+
 ## Local storage and JSON records
 
 SQLite is the transactional source of truth at `data/agent.db`. After each workflow run and relevant API mutation, portable JSON snapshots are written under `data/exports/`:
@@ -86,6 +98,7 @@ Background scheduling stays disabled by default (`SCHEDULER_ENABLED=false`) to m
 - `GET /jobs`, `GET /approvals?status=pending` — jobs and approval queue
 - `GET /resumes/{job_id}` — resume version history
 - `GET /metrics`, `GET /events` — monitoring
+- `GET/PUT /memory/preferences`, `GET /memory/summary`, `GET /memory/feedback`, `POST /jobs/{job_id}/feedback` — persistent job-search memory
 - `GET /exports/status`, `POST /exports/refresh` — JSON export status and refresh
 
 Run tests:

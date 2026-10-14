@@ -175,9 +175,22 @@ with jobs_tab:
             st.write(job.get("score_reasons", []))
             st.write(job.get("description", ""))
             st.markdown(f"[Open job posting]({job['url']})")
+            current_feedback = job.get("feedback")
+            feedback_labels = {
+                "interested": "Interested",
+                "not_interested": "Not interested",
+                "irrelevant": "Irrelevant",
+                "applied": "Applied",
+            }
+            if current_feedback:
+                st.success(f"Feedback recorded: {feedback_labels.get(current_feedback, current_feedback)}")
+                if job.get("feedback_reason"):
+                    st.caption("Your note: " + job["feedback_reason"])
             feedback_reason = st.text_input(
-                "Feedback note (optional)", key="feedback_reason_" + job["id"],
+                "Feedback note (optional)",
+                key="feedback_reason_" + job["id"],
                 placeholder="e.g. too senior, weak RAG match, good agentic role",
+                disabled=bool(current_feedback),
             )
             feedback_cols = st.columns(3)
             for col, feedback_value, feedback_label in (
@@ -185,7 +198,11 @@ with jobs_tab:
                 (feedback_cols[1], "not_interested", "Not interested"),
                 (feedback_cols[2], "irrelevant", "Irrelevant"),
             ):
-                if col.button(feedback_label, key=f"feedback_{feedback_value}_{job['id']}"):
+                if col.button(
+                    feedback_label,
+                    key=f"feedback_{feedback_value}_{job['id']}",
+                    disabled=bool(current_feedback),
+                ):
                     saved_feedback = post(
                         f"/jobs/{job['id']}/feedback",
                         body={"feedback": feedback_value, "reason": feedback_reason},
@@ -194,7 +211,25 @@ with jobs_tab:
                     if saved_feedback:
                         st.success("Feedback saved to local memory.")
                         st.rerun()
-            if st.button("Queue job for review", key="queue_" + job["id"]):
+
+            approval_status = job.get("approval_status")
+            already_queued = approval_status == "pending" or job.get("status") == "awaiting_approval"
+            already_approved = approval_status == "approved" or job.get("status") == "approved_to_apply"
+            if already_approved:
+                st.success("Job already approved for review/application workflow.")
+            elif already_queued:
+                st.info("Already queued for review.")
+            queue_label = (
+                "Job already approved" if already_approved else
+                "Already queued for review" if already_queued else
+                "Queue job for review again" if approval_status == "rejected" else
+                "Queue job for review"
+            )
+            if st.button(
+                queue_label,
+                key="queue_" + job["id"],
+                disabled=already_queued or already_approved,
+            ):
                 result = post("/approvals/" + job["id"])
                 if result:
                     st.success(result["message"])

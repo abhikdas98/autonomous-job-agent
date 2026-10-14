@@ -14,7 +14,7 @@ from app.agent import run_discovery
 from app.notifications.email_report import send_report
 from app.services.llm_ranking import rank_shortlist, queue_snapshot
 from app.services.llm_worker import RankingWorker
-from app.services.agent_memory import get_preferences, save_preferences, record_feedback, list_feedback, memory_summary
+from app.services.agent_memory import get_preferences, save_preferences, record_feedback, clear_feedback, list_feedback, memory_summary
 from app.resumes import (
     ResumeError, upload_master, master_status, tailor_for_job, list_versions,
     get_version, approve_version, record_version_submission, resolve_artifact,
@@ -318,6 +318,14 @@ def update_job_search_preferences(body: JobSearchPreferences):
         return save_preferences(body.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.delete("/jobs/{job_id}/feedback")
+def delete_job_feedback(job_id: str):
+    try:
+        return clear_feedback(job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @app.get("/memory/summary")

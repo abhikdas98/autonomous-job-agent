@@ -129,7 +129,7 @@ def _wait_for_user_checkpoint(page: Any, checkpoint: str, timeout_seconds: int =
             page.wait_for_timeout(1000)
         except Exception:
             return False
-        if _challenge(page) != checkpoint:
+        if _challenge(page) is None:
             return True
     return False
 
@@ -157,9 +157,12 @@ def _fill_known_fields(page: Any, profile: dict[str, Any], resume_pdf: Path) -> 
                 continue
             tag = field.evaluate("(el) => el.tagName.toLowerCase()")
             kind = (field.get_attribute("type") or "text").casefold()
+            if tag == "input" and kind in {"checkbox", "radio"}:
+                if field.get_attribute("required") is not None or field.get_attribute("aria-required") == "true":
+                    unresolved.append(_field_label(page, field) or f"required consent/choice #{index + 1}")
+                continue
             if tag == "input" and kind in {
-                "hidden", "submit", "button", "reset", "password", "file",
-                "checkbox", "radio", "image",
+                "hidden", "submit", "button", "reset", "password", "file", "image",
             }:
                 continue
             label = _field_label(page, field)

@@ -51,6 +51,8 @@ def approve_application_batch(items: list[dict[str, str]]) -> dict[str, Any]:
                 raise ApplicationAutomationError(f"Resume version not found: {version_id}")
             if row["approval_status"] == "rejected":
                 raise ApplicationAutomationError(f"Job {job_id} was rejected and cannot be queued.")
+            if row["queue_status"] == "submitted":
+                raise ApplicationAutomationError(f"Job {job_id} has already been submitted.")
             if row["resume_status"] not in {"needs_review", "approved"}:
                 raise ApplicationAutomationError(
                     f"Resume version {version_id} is not eligible for batch approval "
@@ -64,8 +66,6 @@ def approve_application_batch(items: list[dict[str, str]]) -> dict[str, Any]:
                 raise ApplicationAutomationError(
                     f"Resume version {version_id} does not belong to job {job_id}."
                 )
-            if row["queue_status"] == "submitted":
-                raise ApplicationAutomationError(f"Job {job_id} has already been submitted.")
             # This endpoint is the explicit batch HITL action: approve the job and
             # the exact selected resume version together before queueing automation.
             db.execute(

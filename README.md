@@ -2,6 +2,33 @@
 
 Local one-click job-search workflow built with FastAPI, Streamlit, LangChain/LangGraph, SQLite, Adzuna, and a Groq-compatible LLM endpoint. This is a standalone project and does **not** modify `job-search-pro`.
 
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+    A[Adzuna job discovery] --> B[Normalize and deduplicate]
+    B --> C[Deterministic baseline ranking]
+    C --> D[Optional LLM reranking]
+    D --> E[Fact-checked resume draft]
+    E --> F[Human review and approval]
+    F --> G[Optional email digest or approved browser workflow]
+    B --> H[(Local SQLite)]
+    C --> H
+    D --> H
+    E --> H
+    F --> H
+```
+
+### What this project demonstrates
+
+- **Workflow orchestration:** a multi-step job-search workflow with persistent run/application records.
+- **Resilient ranking:** deterministic scoring remains available when the LLM provider is unavailable or rate-limited.
+- **Human-in-the-loop controls:** resume versions and application pairs are reviewed before browser automation.
+- **Local-first operation:** SQLite and local exports keep the workflow usable without a separate database service.
+
+**Scope note:** this is a personal project, not an employer-operated recruiting platform. Browser automation is portal-dependent, and ambiguous fields or outcomes require human intervention. The README describes implemented workflow behavior; it does not claim universal portal compatibility or production-scale reliability.
+
+
 ## Daily use: one run button
 
 1. Start the FastAPI backend in PowerShell:
